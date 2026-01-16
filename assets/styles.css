@@ -119,28 +119,41 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  box-shadow: none;
-  font-weight: 800;
+  gap: 12px;
+  padding: 12px 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(11, 34, 57, 0.18);
+  background: #ffffff;
+  box-shadow: 0 2px 0 rgba(2, 6, 23, 0.06), 0 10px 18px rgba(2, 6, 23, 0.10);
+  font-weight: 700;
   text-decoration: none;
+}
+
+.btn::after {
+  content: "›";
+  font-size: 20px;
+  line-height: 1;
 }
 
 .btn:hover {
   text-decoration: none;
-  border-color: rgba(37, 99, 235, 0.45);
+  border-color: rgba(11, 34, 57, 0.28);
 }
 
 .btn-primary {
-  border-color: var(--accent);
-  background: var(--accent);
+  border-color: #0b2239;
+  background: #0b2239;
   color: #ffffff;
 }
 
+.btn-primary:hover {
+  border-color: #081a2c;
+  background: #081a2c;
+}
+
 .btn-sm { padding: 10px 14px; font-size: 14px; }
+
+.btn-sm::after { font-size: 18px; }
 
 .badge {
   display: inline-flex;
