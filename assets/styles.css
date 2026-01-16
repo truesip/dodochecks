@@ -108,12 +108,12 @@ button:focus-visible {
   justify-content: flex-end;
 }
 
-.nav a {
+.nav a:not(.btn) {
   color: var(--muted);
   font-weight: 600;
 }
 
-.nav a:hover { color: var(--text); text-decoration: none; }
+.nav a:not(.btn):hover { color: var(--text); text-decoration: none; }
 
 .btn {
   display: inline-flex;
