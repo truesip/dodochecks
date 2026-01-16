@@ -27,10 +27,7 @@ body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
   color: var(--text);
-  background:
-    radial-gradient(1200px 500px at 10% 0%, rgba(37, 99, 235, 0.16), transparent 60%),
-    radial-gradient(900px 450px at 90% 10%, rgba(167, 139, 250, 0.20), transparent 55%),
-    linear-gradient(180deg, #ffffff 0%, var(--bg) 45%, #ffffff 100%);
+  background: var(--bg);
   line-height: 1.55;
 }
 
@@ -75,8 +72,7 @@ button:focus-visible {
   position: sticky;
   top: 0;
   z-index: 50;
-  backdrop-filter: blur(10px);
-  background: rgba(255, 255, 255, 0.78);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
@@ -127,8 +123,8 @@ button:focus-visible {
   padding: 12px 16px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(2, 6, 23, 0.02), rgba(2, 6, 23, 0.05));
-  box-shadow: 0 0 0 rgba(0,0,0,0);
+  background: var(--surface);
+  box-shadow: none;
   font-weight: 800;
   text-decoration: none;
 }
@@ -139,8 +135,9 @@ button:focus-visible {
 }
 
 .btn-primary {
-  border-color: rgba(37, 99, 235, 0.85);
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.22), rgba(37, 99, 235, 0.10));
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
 }
 
 .btn-sm { padding: 10px 14px; font-size: 14px; }
@@ -152,7 +149,7 @@ button:focus-visible {
   padding: 8px 12px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(2, 6, 23, 0.03);
+  background: transparent;
   color: var(--muted);
   font-weight: 700;
   font-size: 14px;
@@ -163,7 +160,7 @@ button:focus-visible {
   height: 8px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+  box-shadow: none;
 }
 
 /* Layout */
@@ -220,10 +217,10 @@ main {
 
 .hero-card {
   border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(2, 6, 23, 0.03));
+  background: var(--surface);
   border-radius: var(--radius);
   padding: 18px;
-  box-shadow: var(--shadow);
+  box-shadow: none;
 }
 
 .hero-card .logo {
@@ -243,7 +240,7 @@ main {
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--surface);
 }
 
 .kpi strong { display: block; font-size: 14px; }
@@ -259,7 +256,7 @@ main {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 18px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(2, 6, 23, 0.02));
+  background: var(--surface);
 }
 
 .card h3 {
@@ -317,7 +314,7 @@ main {
   padding: 2px 6px;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: rgba(2, 6, 23, 0.04);
+  background: transparent;
   color: var(--text);
 }
 
@@ -325,8 +322,8 @@ main {
   margin-top: 12px;
   padding: 12px 14px;
   border-radius: var(--radius);
-  border: 1px solid rgba(37, 99, 235, 0.22);
-  background: rgba(37, 99, 235, 0.06);
+  border: 1px solid var(--accent);
+  background: transparent;
   color: var(--muted);
 }
 
@@ -334,7 +331,7 @@ main {
 .site-footer {
   border-top: 1px solid var(--border);
   padding: 28px 0 40px;
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--surface);
 }
 
 .footer-grid {
