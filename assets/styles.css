@@ -203,8 +203,8 @@ main {
 
 .hero-grid {
   display: grid;
-  grid-template-columns: 1.25fr 0.75fr;
-  gap: 34px;
+  grid-template-columns: 1fr;
+  gap: 26px;
   align-items: center;
 }
 
@@ -236,17 +236,15 @@ main {
   box-shadow: none;
 }
 
-.hero-illustration {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 260px;
-  padding: 20px;
+.plane-banner {
+  padding: 18px 0 0;
 }
 
 .plane-svg {
-  width: 100%;
+  display: block;
+  width: min(920px, 100%);
   height: auto;
+  margin: 0 auto;
 }
 
 .cta-card {
