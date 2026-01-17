@@ -247,7 +247,8 @@ main {
 
 .plane-svg {
   display: block;
-  width: 100%;
+  width: 85%;
+  max-width: 440px;
   height: auto;
 }
 
