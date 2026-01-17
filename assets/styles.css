@@ -236,6 +236,42 @@ main {
   box-shadow: none;
 }
 
+.hero-illustration {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 260px;
+  padding: 20px;
+}
+
+.plane-svg {
+  width: 100%;
+  height: auto;
+}
+
+.cta-card {
+  margin-bottom: 18px;
+}
+
+.cta-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 18px;
+  align-items: center;
+}
+
+.cta-media {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cta-logo {
+  width: min(320px, 100%);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: #000;
+}
+
 .hero-card .logo {
   border-radius: 14px;
   border: 1px solid var(--border);
@@ -372,6 +408,8 @@ main {
   .hero-grid { grid-template-columns: 1fr; }
   .grid { grid-template-columns: 1fr; }
   .split { grid-template-columns: 1fr; }
+  .cta-grid { grid-template-columns: 1fr; }
+  .cta-media { justify-content: flex-start; }
   .footer-grid { grid-template-columns: 1fr; }
   .footer-links { justify-items: start; }
   .kpis { grid-template-columns: 1fr; }
