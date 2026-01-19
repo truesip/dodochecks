@@ -1,29 +1,56 @@
 # Dodo Checks
 
-Marketing website + policy pages for **Dodo Checks** (check printing & mailing services).
+Dodo Checks is a check printing, mailing, and deposit workflow app.
 
 ## What’s included
-- `index.html` — homepage
-- `policies/` — policy pages
-- `assets/` — logo assets + global stylesheet
+- `public/` — marketing site + policy pages + dashboard assets
+- `src/` — Node.js + Express server
+  - public signup + login
+  - cookie-based auth (JWT)
+  - local SQL storage via SQLite (Node’s `node:sqlite`)
+  - Increase API wrapper (stub)
 
-## Local preview (Windows)
-Open the homepage in your browser:
-- Double-click `index.html`, or run:
-  - `start .\index.html`
+## Local development (Windows)
+1) Install dependencies:
+- `npm install`
+
+2) Create your `.env`:
+- Copy `.env.example` to `.env`
+- Set `APP_COOKIE_SECRET` to a long random value
+- Set Increase vars:
+  - `INCREASE_API_KEY=...`
+  - `INCREASE_URL=https://sandbox.increase.com` (sandbox)
+
+3) Run the server:
+- `npm run dev`
+
+Then open:
+- Marketing site: `http://localhost:3000/`
+- Sign up: `http://localhost:3000/signup`
+- Log in: `http://localhost:3000/login`
+- Dashboard: `http://localhost:3000/app/overview`
+
+## Database
+- Local dev uses SQLite by default at `./data/dodo-checks.sqlite` (ignored by git).
+- Production should use a managed database (DigitalOcean MySQL, Postgres, etc.). App Platform’s filesystem is ephemeral, so SQLite is not a good long-term production choice.
+- To use MySQL, set `DATABASE_URL` to a MySQL connection string (for DigitalOcean this typically includes `?ssl-mode=REQUIRED`).
 
 ## Deploy to DigitalOcean App Platform
-This repo is compatible with **DigitalOcean App Platform** as a **Static Site**.
+This repo should be deployed as a **Web Service** (Node.js), not a Static Site.
 
-1. In DigitalOcean, create a new **App**.
-2. Choose **GitHub** as the source and connect this repository.
-3. Add a **Static Site** component:
-   - Source directory: `/`
-   - Output directory: `/`
-   - Build command: (none)
-4. Deploy.
-
-> Note: If you later migrate to a framework (Next.js, React, etc.), App Platform settings will change (build command + output directory).
+High-level settings:
+- Build command: `npm ci`
+- Run command: `npm start`
+- Environment variables:
+  - `NODE_ENV=production`
+  - `APP_COOKIE_SECRET=...`
+  - `DATABASE_URL=...` (MySQL connection string)
+  - `INCREASE_API_KEY=...`
+  - `INCREASE_URL=https://api.increase.com` (production) or `https://sandbox.increase.com` (sandbox)
+  - Optional:
+    - `APP_DEBUG=false`
+    - `INCREASE_DEBUG=false`
+    - `MYSQL_SSL_CA=...` (CA certificate contents, if you want TLS verification)
 
 ## Contact
 - Email: mailing@dodochecks.com
