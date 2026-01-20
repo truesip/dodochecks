@@ -14,8 +14,8 @@ Dodo Checks is a check printing, mailing, and deposit workflow app.
 1) Install dependencies:
 - `npm install`
 
-2) Create your `.env`:
-- Copy `.env.example` to `.env`
+2) Configure your local env:
+- Update `.env.example` (this is what `npm run dev` loads locally)
 - Set `APP_COOKIE_SECRET` to a long random value
 - Set Increase vars:
   - `INCREASE_API_KEY=...`

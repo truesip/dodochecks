@@ -1,9 +1,16 @@
 'use strict';
 
-require('dotenv').config();
+const path = require('node:path');
+
+// Local development uses `.env.example` (when running `npm run dev`).
+// Production uses `.env` (when running `npm start`) or platform-provided env vars.
+const dotenv = require('dotenv');
+const envFile =
+  process.env.DOTENV_FILE || (process.env.npm_lifecycle_event === 'dev' ? '.env.example' : '.env');
+
+dotenv.config({ path: path.join(__dirname, '..', envFile) });
 
 const express = require('express');
-const path = require('node:path');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
 
