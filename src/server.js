@@ -2716,8 +2716,13 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
         return;
       }
 
+      const legalName = String(compliance?.full_name || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const accountName = legalName ? `DodoChecks - ${legalName}` : `DodoChecks - User ${req.user.id}`;
+
       const createdAccount = await increase.createAccount({
-        name: `DodoChecks - User ${req.user.id}`,
+        name: accountName,
         entityId: accountEntityId,
         programId,
         idempotencyKey: `user-${req.user.id}-account`,
