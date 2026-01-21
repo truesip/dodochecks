@@ -153,6 +153,8 @@ input, button {
 }
 
 .field input {
+  width: 100%;
+  min-width: 0;
   height: 42px;
   border-radius: 12px;
   border: 1px solid var(--border);
@@ -620,6 +622,8 @@ input, button {
 }
 
 .field select {
+  width: 100%;
+  min-width: 0;
   height: 42px;
   border-radius: 12px;
   border: 1px solid var(--border);
