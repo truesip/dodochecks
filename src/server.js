@@ -2148,13 +2148,12 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
     return;
   }
 
-  // The program is platform-level. Accounts are created under INCREASE_ENTITY_ID (typically a bank partner entity).
-  // Each end-user gets their own natural-person entity, attached to the account via informational_entity_id.
-  const accountOwnerEntityId = env('INCREASE_ENTITY_ID');
+  // The program is platform-level.
+  // Each end-user gets their own natural-person Entity, and their Account is owned by that Entity.
   const programId = env('INCREASE_PROGRAM_ID');
 
-  if (!accountOwnerEntityId || !programId) {
-    res.status(400).json({ error: 'INCREASE_ENTITY_ID and INCREASE_PROGRAM_ID must be set' });
+  if (!programId) {
+    res.status(400).json({ error: 'INCREASE_PROGRAM_ID must be set' });
     return;
   }
 
@@ -2197,7 +2196,6 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
 
       const entityBody = {
         structure: 'natural_person',
-        relationship: 'informational',
         natural_person: {
           name: String(compliance.full_name || '').trim(),
           date_of_birth: String(compliance.date_of_birth || '').trim(),
@@ -2220,7 +2218,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
 
       const createdEntity = await increase.createEntity({
         body: entityBody,
-        idempotencyKey: `user-${req.user.id}-entity`,
+        idempotencyKey: `user-${req.user.id}-entity-v2`,
       });
       userEntityId = String(createdEntity?.id || '').trim();
 
@@ -2232,7 +2230,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
       createAuditEvent({
         userId: req.user.id,
         type: 'increase.entity.created',
-        payload: { id: userEntityId, structure: 'natural_person', relationship: 'informational' },
+        payload: { id: userEntityId, structure: 'natural_person' },
       });
 
       await upsertUserIncrease({
@@ -2247,8 +2245,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
     if (!accountId) {
       const createdAccount = await increase.createAccount({
         name: `DodoChecks - ${String(compliance.full_name).slice(0, 120)}`,
-        entityId: accountOwnerEntityId,
-        informationalEntityId: userEntityId,
+        entityId: userEntityId,
         programId,
         idempotencyKey: `user-${req.user.id}-account`,
       });
@@ -2257,7 +2254,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
       createAuditEvent({
         userId: req.user.id,
         type: 'increase.account.created',
-        payload: { id: accountId, informational_entity_id: userEntityId },
+        payload: { id: accountId, entity_id: userEntityId },
       });
     }
 
@@ -5873,8 +5870,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       const hasProof = docs.some((d) => String(d?.kind || '') === 'proof_of_address');
 
       const encryptionReady = Boolean(getDataEncryptionKey());
-      const increaseReady =
-        hasIncrease && Boolean(env('INCREASE_ENTITY_ID')) && Boolean(env('INCREASE_PROGRAM_ID'));
+      const increaseReady = hasIncrease && Boolean(env('INCREASE_PROGRAM_ID'));
 
       const docsRows = docs
         .map((d) => {
@@ -5917,7 +5913,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
           ? '<div class="alert" role="alert"><strong>Setup:</strong> Set <code>APP_DATA_ENCRYPTION_KEY</code> (base64 32 bytes) to store SSNs.</div>'
           : '',
         !increaseReady
-          ? '<div class="alert" role="alert"><strong>Setup:</strong> Set <code>INCREASE_API_KEY</code>, <code>INCREASE_ENTITY_ID</code>, and <code>INCREASE_PROGRAM_ID</code> to provision accounts.</div>'
+          ? '<div class="alert" role="alert"><strong>Setup:</strong> Set <code>INCREASE_API_KEY</code> and <code>INCREASE_PROGRAM_ID</code> to provision accounts.</div>'
           : '',
       ]
         .filter(Boolean)
