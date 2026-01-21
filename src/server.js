@@ -4799,7 +4799,9 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         </details>
       `
       : `<button class="btn" type="button" disabled title="${
-          hasIncrease ? 'Finish onboarding to enable transfers' : 'Set INCREASE_API_KEY to enable'
+          hasIncrease
+            ? 'Finish compliance and provision your account to enable transfers'
+            : 'Set INCREASE_API_KEY to enable'
         }">New</button>`;
 
     if (!hasIncrease) {
@@ -6609,14 +6611,14 @@ app.get('/app/:section', requireAuth, async (req, res) => {
   } else if (section === 'lockboxes') {
     subtitle = 'Lockboxes for inbound check payments';
 
-    const canCreate = hasIncrease && !increaseError && increaseAccounts.length > 0;
-    const createBtn = canCreate
-      ? '<button class="btn-primary" type="button" data-open-modal="create-lockbox">Create Lockbox</button>'
-      : `<button class="btn-primary" type="button" disabled title="${
-          hasIncrease ? 'No accounts loaded yet' : 'Set INCREASE_API_KEY to enable'
-        }">Create Lockbox</button>`;
+    // Consumer UX: one default lockbox per user, created during onboarding provisioning.
+    const hasLockbox = Boolean(userLockboxId);
 
-    actionsHtml = `${createBtn}`;
+    actionsHtml = !hasIncrease
+      ? ''
+      : hasLockbox
+        ? ''
+        : `<button class="btn" type="button" disabled title="Finish compliance and provision your account to enable lockboxes">Lockboxes</button>`;
 
     if (!hasIncrease) {
       content = `
@@ -6635,44 +6637,18 @@ app.get('/app/:section', requireAuth, async (req, res) => {
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
-    } else {
-      const selectedAccountId = String(req.query?.account_id || '').trim() || '';
-
-      const accountOptionsWithAllHtml = `
-        <option value=""${selectedAccountId ? '' : ' selected'}>All accounts</option>
-        ${increaseAccounts
-          .map((a) => {
-            const label = String(a.name || a.id || 'Account');
-            const id = String(a.id || '');
-            const selected = id && id === selectedAccountId ? ' selected' : '';
-            return `<option value="${esc(id)}"${selected}>${esc(label)}</option>`;
-          })
-          .join('')}
-      `;
-
-      const filterHtml = `
-        <details class="menu">
-          <summary class="btn">Filter <span class="kbd" aria-hidden="true">F</span></summary>
-          <div class="menu-panel" role="menu" aria-label="Filter lockboxes">
-            <form class="form tx-filter" method="get" action="/app/lockboxes">
-              <label class="field">
-                <span>Account</span>
-                <select name="account_id">${accountOptionsWithAllHtml}</select>
-              </label>
-
-              <div class="tx-filter-actions">
-                <a class="btn" href="/app/lockboxes">Clear</a>
-                <button class="btn-primary" type="submit">Apply</button>
-              </div>
-            </form>
+    } else if (!hasLockbox) {
+      content = `
+        <section class="card">
+          <h2>Lockboxes</h2>
+          <p class="muted" style="margin: 0;">Finish compliance and provision your account to enable lockboxes.</p>
+          <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+            <a class="btn-primary" href="/app/compliance">Go to Compliance</a>
+            <a class="btn" href="/app/overview">Back to Overview</a>
           </div>
-        </details>
+        </section>
       `;
-
-      const accountNameById = new Map(
-        increaseAccounts.map((a) => [String(a.id || ''), String(a.name || a.id || '')])
-      );
-
+    } else {
       function formatLockboxAddress(addr, fallbackRecipient) {
         const a = addr && typeof addr === 'object' ? addr : {};
         const recipient = String(a.recipient || fallbackRecipient || '').trim();
@@ -6691,99 +6667,48 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         const locality = [city, state, postal].filter(Boolean).join(' ');
         if (locality) parts.push(locality);
 
-        return parts.join(' • ');
+        return parts.join('\n');
       }
 
-      function renderLockboxRow(lb) {
-        const created = formatShortDateTime(lb.created_at || lb.created || '');
-        const desc = String(lb.description || lb.recipient_name || lb.id || '');
-        const acctId = String(lb.account_id || '');
-        const acctName = accountNameById.get(acctId) || acctId || '—';
+      const lb = lockboxes.find((x) => String(x?.id || '').trim() === userLockboxId) || lockboxes[0] || null;
 
-        const behaviorRaw = String(lb.check_deposit_behavior || '').trim();
-        const behaviorLabel = humanizeEnum(behaviorRaw) || behaviorRaw || '—';
-        const dotClass = `tx-dot ${lockboxBehaviorClass(behaviorRaw)}`;
-
-        const addressStr = formatLockboxAddress(lb.address, lb.recipient_name);
-
-        return `
-          <div class="tx-row">
-            <div class="tx-created"><span class="${dotClass}" aria-hidden="true"></span>${esc(created)}</div>
-            <div class="tx-desc">${esc(desc || '—')}</div>
-            <div class="tx-acct">${esc(acctName)}</div>
-            <div class="tx-cat">${esc(addressStr || '—')}</div>
-            <div class="tx-amt"><span class="pill">${esc(behaviorLabel)}</span></div>
-          </div>
-        `;
-      }
-
-      const rows = lockboxes.map((lb) => renderLockboxRow(lb)).join('');
-      const emptyState = !rows ? '<div class="tx-empty">No lockboxes found.</div>' : '';
-
-      const createModal = `
-        <div class="modal" data-modal="create-lockbox" hidden>
-          <div class="modal-backdrop" data-close-modal></div>
-          <div class="modal-card" role="dialog" aria-modal="true" aria-label="Create lockbox">
-            <div class="modal-head">
-              <h2>Create lockbox</h2>
-              <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
-            </div>
-
-            <form class="form" data-form="create-lockbox">
-              <label class="field">
-                <span>Account</span>
-                <select name="account_id" required>
-                  <option value="">Select an account</option>
-                  ${accountOptionsHtml}
-                </select>
-              </label>
-
-              <label class="field">
-                <span>Description (optional)</span>
-                <input name="description" type="text" placeholder="e.g. Rent payments" />
-              </label>
-
-              <label class="field">
-                <span>Recipient name (optional)</span>
-                <input name="recipient_name" type="text" placeholder="e.g. Company Inc." />
-              </label>
-
-              <div class="modal-actions">
-                <button class="btn" type="button" data-close-modal>Cancel</button>
-                <button class="btn-primary" type="submit">Create</button>
-              </div>
-
-              <div class="modal-error small" data-modal-error hidden></div>
-            </form>
-
-            <p class="small" style="margin: 10px 2px 0;">
-              We’ll generate a unique mailing address + recipient for your lockbox after creation.
-            </p>
-          </div>
-        </div>
-      `;
+      const created = lb ? formatShortDateTime(lb.created_at || lb.created || '') : '';
+      const behaviorRaw = lb ? String(lb.check_deposit_behavior || '').trim() : '';
+      const behaviorLabel = humanizeEnum(behaviorRaw) || behaviorRaw || '—';
+      const addressStr = lb ? formatLockboxAddress(lb.address, lb.recipient_name) : '';
 
       content = `
         <section class="card">
-          <div class="tx-toolbar">
-            ${filterHtml}
-          </div>
+          <h2>Your lockbox</h2>
+          <p class="muted" style="margin: 0;">Use this mailing address to receive inbound checks.</p>
 
-          <div class="tx-table" role="table" aria-label="Lockboxes">
-            <div class="tx-head" role="row">
-              <div role="columnheader">Created</div>
-              <div role="columnheader">Description</div>
-              <div role="columnheader">Account</div>
-              <div role="columnheader">Mailing address</div>
-              <div role="columnheader" style="text-align:right;">Deposit</div>
+          <div style="margin-top: 14px; display: grid; gap: 10px;">
+            <div>
+              <div class="small">Mailing address</div>
+              <pre style="margin: 6px 0 0; white-space: pre-wrap;">${esc(addressStr || '—')}</pre>
             </div>
 
-            ${rows}
-            ${emptyState}
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+              <div>
+                <div class="small">Deposit behavior</div>
+                <div style="margin-top: 6px;"><span class="pill">${esc(behaviorLabel)}</span></div>
+              </div>
+              <div>
+                <div class="small">Lockbox ID</div>
+                <div style="margin-top: 6px;">${esc(userLockboxId)}</div>
+              </div>
+              <div>
+                <div class="small">Created</div>
+                <div style="margin-top: 6px;">${esc(created || '—')}</div>
+              </div>
+            </div>
           </div>
         </section>
 
-        ${createModal}
+        <section class="card" style="margin-top: 12px;">
+          <h2>Inbox</h2>
+          <p class="muted" style="margin: 0;">Inbound mail items will appear here next.</p>
+        </section>
       `;
     }
   } else {
