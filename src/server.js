@@ -280,7 +280,14 @@ function findFirstIdByPrefixes(value, prefixes, depth = 0, seen) {
     return '';
   }
 
-  for (const v of Object.values(value)) {
+  const skipStringKeys = new Set(['category', 'type', 'route_type', 'transaction_type', 'kind']);
+
+  for (const [k, v] of Object.entries(value)) {
+    // Avoid false positives from enum-like strings such as "ach_transfer_instruction".
+    if (typeof v === 'string' && skipStringKeys.has(String(k).toLowerCase())) {
+      continue;
+    }
+
     const found = findFirstIdByPrefixes(v, prefixes, depth + 1, seen);
     if (found) return found;
   }
@@ -797,6 +804,15 @@ app.post('/api/pending-transactions/:pendingTransactionId/release', requireAuthA
 
     if (pendingAccountId && pendingAccountId !== accountId) {
       res.status(404).json({ error: 'not_found' });
+      return;
+    }
+
+    const pendingCategory = String(pending?.category || '').trim();
+    if (pendingCategory !== 'user_initiated_hold') {
+      res.status(409).json({
+        error: 'pending_transaction_not_releasable',
+        message: 'Only pending transactions with category user_initiated_hold can be released.',
+      });
       return;
     }
 
@@ -3855,7 +3871,10 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
 
     const actionButtons = [];
 
-    if (kind === 'pending') {
+    const pendingCategoryRaw = kind === 'pending' ? String(tx?.category || '').trim() : '';
+    const canReleasePending = kind === 'pending' && pendingCategoryRaw === 'user_initiated_hold';
+
+    if (canReleasePending) {
       actionButtons.push(
         `<button class="btn-primary" type="button" data-open-modal="tx-release">Release pending transaction</button>`
       );
