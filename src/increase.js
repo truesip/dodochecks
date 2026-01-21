@@ -49,7 +49,13 @@ function redact(value) {
         key === 'routing_number' ||
         key === 'api_key' ||
         key === 'token' ||
-        key === 'authorization'
+        key === 'authorization' ||
+        key === 'identification_number' ||
+        key === 'tax_identifier' ||
+        key === 'tax_identification_number' ||
+        key === 'taxpayer_identification_number' ||
+        key === 'ssn' ||
+        key === 'social_security_number'
       ) {
         out[key] = '[REDACTED]';
       } else {
@@ -198,7 +204,7 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     // Accounts
     listAccounts: (query) => request({ method: 'GET', pathname: '/accounts', query }),
     retrieveAccount: ({ accountId }) => request({ method: 'GET', pathname: `/accounts/${encodeURIComponent(accountId)}` }),
-    createAccount: ({ name, entityId, programId, idempotencyKey }) =>
+    createAccount: ({ name, entityId, informationalEntityId, programId, idempotencyKey }) =>
       request({
         method: 'POST',
         pathname: '/accounts',
@@ -206,6 +212,7 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
         body: {
           name,
           entity_id: entityId,
+          ...(informationalEntityId ? { informational_entity_id: informationalEntityId } : {}),
           program_id: programId,
         },
       }),
@@ -364,6 +371,13 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     listEntities: (query) => request({ method: 'GET', pathname: '/entities', query }),
     retrieveEntity: ({ entityId }) =>
       request({ method: 'GET', pathname: `/entities/${encodeURIComponent(entityId)}` }),
+    createEntity: ({ body, idempotencyKey }) =>
+      request({
+        method: 'POST',
+        pathname: '/entities',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
+        body: body || {},
+      }),
 
     // Entity Supplemental Documents
     listEntitySupplementalDocuments: (query) =>

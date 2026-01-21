@@ -17,6 +17,7 @@ Dodo Checks is a check printing, mailing, and deposit workflow app.
 2) Configure your local env:
 - Update `.env.example` (this is what `npm run dev` loads locally)
 - Set `APP_COOKIE_SECRET` to a long random value
+- Set `APP_DATA_ENCRYPTION_KEY` (base64 32 bytes) so SSNs can be stored encrypted
 - Set Increase vars:
   - `INCREASE_API_KEY=...`
   - `INCREASE_URL=https://sandbox.increase.com` (sandbox)

@@ -115,6 +115,31 @@ function encryptString(plaintext) {
   return [iv.toString('base64'), ciphertext.toString('base64'), tag.toString('base64')].join('.');
 }
 
+function decryptString(ciphertext) {
+  const key = getDataEncryptionKey();
+  if (!key) return null;
+
+  const raw = String(ciphertext || '').trim();
+  if (!raw) return null;
+
+  const parts = raw.split('.');
+  if (parts.length !== 3) return null;
+
+  try {
+    const iv = Buffer.from(parts[0], 'base64');
+    const data = Buffer.from(parts[1], 'base64');
+    const tag = Buffer.from(parts[2], 'base64');
+
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+
+    const plaintext = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+    return plaintext;
+  } catch {
+    return null;
+  }
+}
+
 function digitsOnly(value) {
   return String(value || '').replace(/\D/g, '');
 }
@@ -1735,6 +1760,7 @@ app.post('/api/lockboxes', requireAuthApi, async (req, res) => {
   const recipientName = String(req.body?.recipient_name || '').trim();
 
   const userIncrease = await getUserIncrease(req.user.id);
+  const entityId = userIncrease?.entity_id ? String(userIncrease.entity_id).trim() : '';
   const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
 
   if (!accountId) {
@@ -1756,6 +1782,7 @@ app.post('/api/lockboxes', requireAuthApi, async (req, res) => {
       if (!userIncrease?.lockbox_id && created?.id) {
         await upsertUserIncrease({
           userId: req.user.id,
+          entityId: entityId || null,
           accountId,
           accountNumberId: userIncrease?.account_number_id ? String(userIncrease.account_number_id) : null,
           lockboxId: String(created.id),
@@ -2121,10 +2148,12 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const entityId = env('INCREASE_ENTITY_ID');
+  // The program is platform-level. Accounts are created under INCREASE_ENTITY_ID (typically a bank partner entity).
+  // Each end-user gets their own natural-person entity, attached to the account via informational_entity_id.
+  const accountOwnerEntityId = env('INCREASE_ENTITY_ID');
   const programId = env('INCREASE_PROGRAM_ID');
 
-  if (!entityId || !programId) {
+  if (!accountOwnerEntityId || !programId) {
     res.status(400).json({ error: 'INCREASE_ENTITY_ID and INCREASE_PROGRAM_ID must be set' });
     return;
   }
@@ -2149,15 +2178,74 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
 
   const increase = createIncreaseClient();
 
+  let userEntityId = existing?.entity_id ? String(existing.entity_id).trim() : '';
   let accountId = existing?.account_id ? String(existing.account_id).trim() : '';
   let accountNumberId = existing?.account_number_id ? String(existing.account_number_id).trim() : '';
   let lockboxId = existing?.lockbox_id ? String(existing.lockbox_id).trim() : '';
 
   try {
+    if (!userEntityId) {
+      const ssnDigits = decryptString(String(compliance.ssn_ciphertext || ''));
+      if (!ssnDigits || ssnDigits.length !== 9) {
+        res.status(400).json({ error: 'unable_to_decrypt_ssn' });
+        return;
+      }
+
+      const fileIds = docs
+        .map((d) => String(d?.file_id || '').trim())
+        .filter(Boolean);
+
+      const entityBody = {
+        structure: 'natural_person',
+        relationship: 'informational',
+        natural_person: {
+          name: String(compliance.full_name || '').trim(),
+          date_of_birth: String(compliance.date_of_birth || '').trim(),
+          identification_number: ssnDigits,
+          address: {
+            line1: String(compliance.address_line1 || '').trim(),
+            ...(String(compliance.address_line2 || '').trim()
+              ? { line2: String(compliance.address_line2 || '').trim() }
+              : {}),
+            city: String(compliance.city || '').trim(),
+            state: String(compliance.state || '').trim(),
+            postal_code: String(compliance.zip || '').trim(),
+          },
+        },
+        ...(fileIds.length ? { supplemental_documents: fileIds } : {}),
+      };
+
+      const createdEntity = await increase.createEntity({
+        body: entityBody,
+        idempotencyKey: `user-${req.user.id}-entity`,
+      });
+      userEntityId = String(createdEntity?.id || '').trim();
+
+      if (!userEntityId) {
+        res.status(500).json({ error: 'entity_create_failed' });
+        return;
+      }
+
+      createAuditEvent({
+        userId: req.user.id,
+        type: 'increase.entity.created',
+        payload: { id: userEntityId, structure: 'natural_person', relationship: 'informational' },
+      });
+
+      await upsertUserIncrease({
+        userId: req.user.id,
+        entityId: userEntityId || null,
+        accountId: accountId || null,
+        accountNumberId: accountNumberId || null,
+        lockboxId: lockboxId || null,
+      });
+    }
+
     if (!accountId) {
       const createdAccount = await increase.createAccount({
         name: `DodoChecks - ${String(compliance.full_name).slice(0, 120)}`,
-        entityId,
+        entityId: accountOwnerEntityId,
+        informationalEntityId: userEntityId,
         programId,
         idempotencyKey: `user-${req.user.id}-account`,
       });
@@ -2166,7 +2254,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
       createAuditEvent({
         userId: req.user.id,
         type: 'increase.account.created',
-        payload: { id: accountId },
+        payload: { id: accountId, informational_entity_id: userEntityId },
       });
     }
 
@@ -2202,6 +2290,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
 
     await upsertUserIncrease({
       userId: req.user.id,
+      entityId: userEntityId || null,
       accountId: accountId || null,
       accountNumberId: accountNumberId || null,
       lockboxId: lockboxId || null,
@@ -2209,6 +2298,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
 
     res.status(201).json({
       ok: true,
+      entity_id: userEntityId || null,
       account_id: accountId || null,
       account_number_id: accountNumberId || null,
       lockbox_id: lockboxId || null,
@@ -3797,6 +3887,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
   let actionsHtml = '';
 
   const userIncrease = await getUserIncrease(req.user.id);
+  const userEntityId = userIncrease?.entity_id ? String(userIncrease.entity_id).trim() : '';
   const userAccountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
   const userAccountNumberId = userIncrease?.account_number_id
     ? String(userIncrease.account_number_id).trim()
@@ -5811,6 +5902,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
       const provisioningSummary = `
         <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
+          <span class="pill">Entity: ${userEntityId ? esc(userEntityId) : 'not provisioned'}</span>
           <span class="pill">Account: ${userAccountId ? esc(userAccountId) : 'not provisioned'}</span>
           <span class="pill">Account number: ${userAccountNumberId ? esc(userAccountNumberId) : 'not provisioned'}</span>
           <span class="pill">Lockbox: ${userLockboxId ? esc(userLockboxId) : 'not provisioned'}</span>

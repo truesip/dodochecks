@@ -799,7 +799,8 @@
       var modal = form.closest('.modal');
       var submit = qs('button[type="submit"]', form);
 
-      var accountId = String(qs('[name="account_id"]', form).value || '').trim();
+      var accountIdField = qs('[name="account_id"]', form);
+      var accountId = accountIdField ? String(accountIdField.value || '').trim() : '';
       var routing = String(qs('[name="routing_number"]', form).value || '').trim();
       var acct = String(qs('[name="account_number"]', form).value || '').trim();
       var amountUsd = String(qs('[name="amount_usd"]', form).value || '').trim();
@@ -807,8 +808,8 @@
       var descriptor = String(qs('[name="statement_descriptor"]', form).value || 'Dodo Checks').trim();
 
       var amount = Number(amountUsd);
-      if (!accountId || !routing || !acct) {
-        setModalError(modal, 'All fields are required.');
+      if (!routing || !acct) {
+        setModalError(modal, 'Routing number and account number are required.');
         return;
       }
 
@@ -827,7 +828,8 @@
 
       try {
         await postJson('/api/transfers', {
-          account_id: accountId,
+          // account_id is user-scoped on the server; include it only for backwards compatibility.
+          account_id: accountId || undefined,
           routing_number: routing,
           account_number: acct,
           amount_cents: cents,
@@ -896,7 +898,8 @@
       var modal = form.closest('.modal');
       var submit = qs('button[type="submit"]', form);
 
-      var accountId = String(qs('[name="account_id"]', form).value || '').trim();
+      var accountIdField = qs('[name="account_id"]', form);
+      var accountId = accountIdField ? String(accountIdField.value || '').trim() : '';
       var amountUsd = String(qs('[name="amount_usd"]', form).value || '').trim();
       var description = String(qs('[name="description"]', form).value || '').trim();
 
@@ -904,8 +907,8 @@
       var back = qs('input[name="back"]', form)?.files?.[0];
 
       var amount = Number(amountUsd);
-      if (!accountId || !front || !back) {
-        setModalError(modal, 'Account, front image, and back image are required.');
+      if (!front || !back) {
+        setModalError(modal, 'Front image and back image are required.');
         return;
       }
       if (!isFinite(amount) || amount <= 0) {
@@ -923,13 +926,218 @@
 
       try {
         var fd = new FormData();
-        fd.append('account_id', accountId);
+        // account_id is user-scoped on the server; include it only for backwards compatibility.
+        if (accountId) fd.append('account_id', accountId);
         fd.append('amount_cents', cents);
         if (description) fd.append('description', description);
         fd.append('front', front);
         fd.append('back', back);
 
         await postFormData('/api/check-deposits', fd);
+        window.location.reload();
+      } catch (err) {
+        setModalError(modal, err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
+
+  // Compliance: Save personal details
+  var complianceSaveForm = qs('form[data-form="compliance-save"]');
+  if (complianceSaveForm) {
+    complianceSaveForm.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      clearInlineError();
+
+      var submit = qs('button[type="submit"]', complianceSaveForm);
+
+      var fullName = String(qs('[name="full_name"]', complianceSaveForm).value || '').trim();
+      var phone = String(qs('[name="phone"]', complianceSaveForm).value || '').trim();
+      var dob = String(qs('[name="date_of_birth"]', complianceSaveForm).value || '').trim();
+      var ssn = String(qs('[name="ssn"]', complianceSaveForm).value || '').trim();
+
+      var line1 = String(qs('[name="address_line1"]', complianceSaveForm).value || '').trim();
+      var line2 = String(qs('[name="address_line2"]', complianceSaveForm).value || '').trim();
+      var city = String(qs('[name="city"]', complianceSaveForm).value || '').trim();
+      var state = String(qs('[name="state"]', complianceSaveForm).value || '').trim();
+      var zip = String(qs('[name="zip"]', complianceSaveForm).value || '').trim();
+
+      if (!fullName || !phone || !dob || !line1 || !city || !state || !zip) {
+        setInlineError('Please fill out all required fields.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/compliance', {
+          full_name: fullName,
+          phone: phone,
+          date_of_birth: dob,
+          ssn: ssn || undefined,
+          address_line1: line1,
+          address_line2: line2 || undefined,
+          city: city,
+          state: state,
+          zip: zip,
+        });
+        window.location.reload();
+      } catch (err) {
+        setInlineError(err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  }
+
+  // Compliance: Upload documents
+  qsa('form[data-form="compliance-document"]').forEach(function (form) {
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      clearInlineError();
+
+      var submit = qs('button[type="submit"]', form);
+      var kind = String(qs('[name="kind"]', form).value || '').trim();
+      var file = qs('input[name="file"]', form)?.files?.[0];
+
+      if (!kind) {
+        setInlineError('Document kind is required.');
+        return;
+      }
+      if (!file) {
+        setInlineError('Select a file to upload.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        var fd = new FormData();
+        fd.append('kind', kind);
+        fd.append('file', file);
+        await postFormData('/api/compliance/documents', fd);
+        window.location.reload();
+      } catch (err) {
+        setInlineError(err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
+
+  // Onboarding: Provision
+  var provisionForm = qs('form[data-form="onboarding-provision"]');
+  if (provisionForm) {
+    provisionForm.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      clearInlineError();
+
+      var submit = qs('button[type="submit"]', provisionForm);
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/onboarding/provision', {});
+        window.location.reload();
+      } catch (err) {
+        setInlineError(err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  }
+
+  // Send wire
+  qsa('form[data-form="wire-transfer"]').forEach(function (form) {
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      var modal = form.closest('.modal');
+      var submit = qs('button[type="submit"]', form);
+
+      var creditorName = String(qs('[name="creditor_name"]', form).value || '').trim();
+      var routing = String(qs('[name="routing_number"]', form).value || '').trim();
+      var acct = String(qs('[name="account_number"]', form).value || '').trim();
+      var amountUsd = String(qs('[name="amount_usd"]', form).value || '').trim();
+      var message = String(qs('[name="remittance_message"]', form).value || '').trim();
+
+      var amount = Number(amountUsd);
+      if (!creditorName || !routing || !acct) {
+        setModalError(modal, 'Beneficiary name, routing number, and account number are required.');
+        return;
+      }
+      if (!isFinite(amount) || amount <= 0) {
+        setModalError(modal, 'Enter a valid amount greater than 0.');
+        return;
+      }
+
+      var cents = Math.round(amount * 100);
+      if (!isFinite(cents) || cents <= 0) {
+        setModalError(modal, 'Enter a valid amount.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/wire-transfers', {
+          creditor_name: creditorName,
+          routing_number: routing,
+          account_number: acct,
+          amount_cents: cents,
+          remittance_message: message || undefined,
+        });
+        window.location.reload();
+      } catch (err) {
+        setModalError(modal, err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
+
+  // Mail check
+  qsa('form[data-form="check-transfer"]').forEach(function (form) {
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      var modal = form.closest('.modal');
+      var submit = qs('button[type="submit"]', form);
+
+      var recipientName = String(qs('[name="recipient_name"]', form).value || '').trim();
+      var amountUsd = String(qs('[name="amount_usd"]', form).value || '').trim();
+      var memo = String(qs('[name="memo"]', form).value || '').trim();
+
+      var line1 = String(qs('[name="mailing_line1"]', form).value || '').trim();
+      var line2 = String(qs('[name="mailing_line2"]', form).value || '').trim();
+      var city = String(qs('[name="mailing_city"]', form).value || '').trim();
+      var state = String(qs('[name="mailing_state"]', form).value || '').trim();
+      var postal = String(qs('[name="mailing_postal_code"]', form).value || '').trim();
+
+      var amount = Number(amountUsd);
+      if (!recipientName || !line1 || !city || !state || !postal) {
+        setModalError(modal, 'Recipient name and complete mailing address are required.');
+        return;
+      }
+      if (!isFinite(amount) || amount <= 0) {
+        setModalError(modal, 'Enter a valid amount greater than 0.');
+        return;
+      }
+
+      var cents = Math.round(amount * 100);
+      if (!isFinite(cents) || cents <= 0) {
+        setModalError(modal, 'Enter a valid amount.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/check-transfers', {
+          recipient_name: recipientName,
+          amount_cents: cents,
+          memo: memo || undefined,
+          mailing_line1: line1,
+          mailing_line2: line2 || undefined,
+          mailing_city: city,
+          mailing_state: state,
+          mailing_postal_code: postal,
+        });
         window.location.reload();
       } catch (err) {
         setModalError(modal, err.message || 'Something went wrong.');
