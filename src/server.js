@@ -2201,7 +2201,10 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
         natural_person: {
           name: String(compliance.full_name || '').trim(),
           date_of_birth: String(compliance.date_of_birth || '').trim(),
-          identification_number: ssnDigits,
+          identification: {
+            method: 'social_security_number',
+            number: ssnDigits,
+          },
           address: {
             line1: String(compliance.address_line1 || '').trim(),
             ...(String(compliance.address_line2 || '').trim()
@@ -2209,11 +2212,10 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
               : {}),
             city: String(compliance.city || '').trim(),
             state: String(compliance.state || '').trim().toUpperCase(),
-            postal_code: digitsOnly(String(compliance.zip || '').trim()),
-            country: 'US',
+            zip: String(compliance.zip || '').trim(),
           },
         },
-        ...(fileIds.length ? { supplemental_documents: fileIds } : {}),
+        ...(fileIds.length ? { supplemental_documents: fileIds.map((file_id) => ({ file_id })) } : {}),
       };
 
       const createdEntity = await increase.createEntity({

@@ -33,17 +33,21 @@ function getDebug(explicitDebug) {
   return parseBool(process.env.INCREASE_DEBUG, false);
 }
 
-function redact(value) {
+function redact(value, path = []) {
   if (value == null) return value;
 
   if (Array.isArray(value)) {
-    return value.map(redact);
+    return value.map((v) => redact(v, path));
   }
 
   if (typeof value === 'object') {
     const out = {};
+    const parentKey = path[path.length - 1];
+
     for (const [k, v] of Object.entries(value)) {
       const key = String(k);
+      const nextPath = path.concat(key);
+
       if (
         key === 'account_number' ||
         key === 'routing_number' ||
@@ -55,11 +59,12 @@ function redact(value) {
         key === 'tax_identification_number' ||
         key === 'taxpayer_identification_number' ||
         key === 'ssn' ||
-        key === 'social_security_number'
+        key === 'social_security_number' ||
+        (key === 'number' && parentKey === 'identification')
       ) {
         out[key] = '[REDACTED]';
       } else {
-        out[key] = redact(v);
+        out[key] = redact(v, nextPath);
       }
     }
     return out;
