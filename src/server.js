@@ -7293,8 +7293,9 @@ app.get('/app/:section', requireAuth, async (req, res) => {
                   <input name="zip" type="text" value="${esc(zipVal)}" required />
                 </label>
 
-                <div style="display:flex; justify-content:flex-end; align-items:flex-end; align-self: end;">
-                  <button class="btn-primary" type="submit">Save</button>
+                <div class="field" style="margin: 0; justify-items: end;">
+                  <span aria-hidden="true">&nbsp;</span>
+                  <button class="btn-primary" type="submit" style="height: 42px; padding: 0 12px;">Save</button>
                 </div>
               </div>
 
