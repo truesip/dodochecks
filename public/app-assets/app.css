@@ -167,10 +167,25 @@ input, button {
 }
 
 /* App layout */
+.app-body {
+  height: 100vh;
+  overflow: hidden;
+}
+
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
   grid-template-columns: 260px 1fr;
+}
+
+.sidebar {
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.main {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .sidebar {
@@ -317,6 +332,14 @@ input, button {
   grid-template-columns: 1.4fr 1fr;
   gap: 14px;
   align-items: start;
+}
+
+.grid.grid-equal {
+  align-items: stretch;
+}
+
+.grid.grid-equal > .card {
+  height: 100%;
 }
 
 .card {
@@ -802,8 +825,10 @@ input, button {
 
 /* Responsive */
 @media (max-width: 980px) {
-  .app-shell { grid-template-columns: 1fr; }
-  .sidebar { position: static; height: auto; }
+  .app-body { overflow: auto; height: auto; }
+  .app-shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
+  .sidebar { position: static; height: auto; overflow: visible; }
+  .main { overflow: visible; min-height: auto; }
   .grid { grid-template-columns: 1fr; }
   .search input { width: 44vw; }
 }

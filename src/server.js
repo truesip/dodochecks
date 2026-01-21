@@ -5680,7 +5680,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
     content = `
       ${increaseErrorHtml}
-      <div class="grid">
+      <div class="grid grid-equal">
         <section class="card">
           <h2>Balance</h2>
           <div class="small">Balance</div>
