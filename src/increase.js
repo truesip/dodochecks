@@ -60,7 +60,15 @@ function redact(value, path = []) {
         key === 'taxpayer_identification_number' ||
         key === 'ssn' ||
         key === 'social_security_number' ||
-        (key === 'number' && parentKey === 'identification')
+        (key === 'number' && parentKey === 'identification') ||
+        (parentKey === 'natural_person' && (key === 'name' || key === 'date_of_birth')) ||
+        (parentKey === 'address' &&
+          (key === 'line1' ||
+            key === 'line2' ||
+            key === 'city' ||
+            key === 'state' ||
+            key === 'zip' ||
+            key === 'postal_code'))
       ) {
         out[key] = '[REDACTED]';
       } else {
