@@ -2618,7 +2618,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
           res.status(409).json({
             error: 'increase_entity_create_not_supported',
             message:
-              'Your Increase account does not support creating end-user entities via API. Ask Increase to enable it, or set INCREASE_ALLOW_SHARED_ENTITY_FALLBACK=true to provision accounts owned by the platform entity (not recommended for real money).',
+              'Your account does not support creating end-user entities via API. Contact support to enable it, or set INCREASE_ALLOW_SHARED_ENTITY_FALLBACK=true to provision accounts owned by the platform entity (not recommended for real money).',
             body: err?.body,
           });
           return;
@@ -2635,7 +2635,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
         res.status(400).json({
           error: 'unable_to_select_account_entity',
           message:
-            'Unable to provision an account because no entity is available. Set INCREASE_ALLOW_SHARED_ENTITY_FALLBACK=true + INCREASE_ENTITY_ID, or enable entity creation on your Increase account.',
+            'Unable to provision an account because no entity is available. Set INCREASE_ALLOW_SHARED_ENTITY_FALLBACK=true + INCREASE_ENTITY_ID, or enable entity creation for your account.',
         });
         return;
       }
@@ -3006,7 +3006,7 @@ app.get('/app/cards/:cardId', requireAuth, async (req, res) => {
     }
 
     const txErrorHtml = txError
-      ? `<div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(txError.message || 'error'))}</div>`
+      ? `<div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(txError.message || 'error'))}</div>`
       : '';
 
     const txTableRows = txRows.map((r) => renderCardTxRow(r)).join('');
@@ -3205,7 +3205,7 @@ app.get('/app/cards/:cardId', requireAuth, async (req, res) => {
     content = `
       <section class="card">
         <h2>Card</h2>
-        <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(err?.message || 'error'))}</div>
+        <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(err?.message || 'error'))}</div>
         <p class="muted" style="margin: 0;">Check the card id and your API key, then try again.</p>
       </section>
     `;
@@ -3385,7 +3385,7 @@ app.get('/app/account-numbers/:accountNumberId', requireAuth, async (req, res) =
     }
 
     const transfersErrorHtml = transfersError
-      ? `<div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(transfersError.message || 'error'))}</div>`
+      ? `<div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(transfersError.message || 'error'))}</div>`
       : '';
 
     const transferRows = inboundTransfers.map((t) => renderInboundTransferRow(t)).join('');
@@ -3583,7 +3583,7 @@ app.get('/app/account-numbers/:accountNumberId', requireAuth, async (req, res) =
             <div class="modal-error small" data-modal-error hidden></div>
           </form>
 
-          <p class="small" style="margin: 10px 2px 0;">This creates a real ACH transfer via Increase.</p>
+          <p class="small" style="margin: 10px 2px 0;">This creates a real ACH transfer.</p>
         </div>
       </div>
     `;
@@ -3605,7 +3605,7 @@ app.get('/app/account-numbers/:accountNumberId', requireAuth, async (req, res) =
     content = `
       <section class="card">
         <h2>Account number</h2>
-        <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(err?.message || 'error'))}</div>
+        <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(err?.message || 'error'))}</div>
         <p class="muted" style="margin: 0;">Check the account number id and your API key, then try again.</p>
       </section>
     `;
@@ -3820,7 +3820,7 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
                 <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
               </div>
 
-              <p class="muted" style="margin: 0;">This will release the pending transaction in Increase.</p>
+              <p class="muted" style="margin: 0;">This will release the pending transaction.</p>
 
               <form class="form" data-form="tx-release">
                 <input type="hidden" name="pending_transaction_id" value="${esc(id)}" />
@@ -3848,7 +3848,7 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
                 <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
               </div>
 
-              <p class="muted" style="margin: 0;">This will attempt to cancel the underlying transfer in Increase.</p>
+              <p class="muted" style="margin: 0;">This will attempt to cancel the underlying transfer.</p>
               <p class="small" style="margin: 10px 2px 0;">Transfer: <code>${esc(cancelableTransferId)}</code></p>
 
               <form class="form" data-form="tx-cancel">
@@ -3877,7 +3877,7 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
                 <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
               </div>
 
-              <p class="muted" style="margin: 0;">This will submit a return for the inbound ACH transfer in Increase.</p>
+              <p class="muted" style="margin: 0;">This will submit a return for the inbound ACH transfer.</p>
               <p class="small" style="margin: 10px 2px 0;">Inbound ACH: <code>${esc(inboundAchTransferId)}</code></p>
 
               <form class="form" data-form="tx-return-inbound-ach">
@@ -3896,7 +3896,7 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
                 <div class="modal-error small" data-modal-error hidden></div>
               </form>
 
-              <p class="small" style="margin: 10px 2px 0;">Reason must match Increase’s return reason enum.</p>
+              <p class="small" style="margin: 10px 2px 0;">Reason must match the supported return reason values.</p>
             </div>
           </div>
         `
@@ -3916,7 +3916,7 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
     content = `
       <section class="card">
         <h2>Transaction</h2>
-        <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(err?.message || 'error'))}</div>
+        <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(err?.message || 'error'))}</div>
         <p class="muted" style="margin: 0;">Check the transaction id and your API key, then try again.</p>
       </section>
     `;
@@ -4291,7 +4291,7 @@ app.get('/app/transfers/:transferId', requireAuth, async (req, res) => {
                 <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
               </div>
 
-              <p class="muted" style="margin: 0;">This will attempt to cancel the transfer in Increase (if it has not already settled).</p>
+              <p class="muted" style="margin: 0;">This will attempt to cancel the transfer (if it has not already settled).</p>
 
               <form class="form" data-form="transfer-cancel">
                 <input type="hidden" name="transfer_id" value="${esc(id)}" />
@@ -4319,7 +4319,7 @@ app.get('/app/transfers/:transferId', requireAuth, async (req, res) => {
                 <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
               </div>
 
-              <p class="muted" style="margin: 0;">This will submit a return for the inbound ACH transfer in Increase.</p>
+              <p class="muted" style="margin: 0;">This will submit a return for the inbound ACH transfer.</p>
 
               <form class="form" data-form="transfer-return-inbound-ach">
                 <input type="hidden" name="transfer_id" value="${esc(id)}" />
@@ -4337,7 +4337,7 @@ app.get('/app/transfers/:transferId', requireAuth, async (req, res) => {
                 <div class="modal-error small" data-modal-error hidden></div>
               </form>
 
-              <p class="small" style="margin: 10px 2px 0;">Reason must match Increase’s return reason enum.</p>
+              <p class="small" style="margin: 10px 2px 0;">Reason must match the supported return reason values.</p>
             </div>
           </div>
         `
@@ -4356,7 +4356,7 @@ app.get('/app/transfers/:transferId', requireAuth, async (req, res) => {
     content = `
       <section class="card">
         <h2>Transfer</h2>
-        <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(err?.message || 'error'))}</div>
+        <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(err?.message || 'error'))}</div>
         <p class="muted" style="margin: 0;">Check the transfer id and your API key, then try again.</p>
       </section>
     `;
@@ -4842,7 +4842,7 @@ app.get('/app/compliance/:entityId', requireAuth, async (req, res) => {
             <div class="modal-error small" data-modal-error hidden></div>
           </form>
 
-          <p class="small" style="margin: 10px 2px 0;">Creates an Increase account transfer instantly.</p>
+          <p class="small" style="margin: 10px 2px 0;">Creates an instant transfer between your accounts.</p>
         </div>
       </div>
 
@@ -4891,7 +4891,7 @@ app.get('/app/compliance/:entityId', requireAuth, async (req, res) => {
             <div class="modal-error small" data-modal-error hidden></div>
           </form>
 
-          <p class="small" style="margin: 10px 2px 0;">Uploads front and back images to create a real deposit via Increase.</p>
+          <p class="small" style="margin: 10px 2px 0;">Uploads front and back images to create a real deposit.</p>
         </div>
       </div>
     `;
@@ -4970,7 +4970,7 @@ app.get('/app/compliance/:entityId', requireAuth, async (req, res) => {
             <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
           </div>
 
-          <p class="muted" style="margin: 0;">This will archive the entity in Increase. You can’t undo this from Dodo Checks yet.</p>
+          <p class="muted" style="margin: 0;">This will archive the entity. You can’t undo this from Dodo Checks yet.</p>
 
           <form class="form" data-form="entity-archive">
             <input type="hidden" name="entity_id" value="${esc(id)}" />
@@ -5004,7 +5004,7 @@ app.get('/app/compliance/:entityId', requireAuth, async (req, res) => {
     content = `
       <section class="card">
         <h2>Entity</h2>
-        <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(err?.message || 'error'))}</div>
+        <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(err?.message || 'error'))}</div>
         <p class="muted" style="margin: 0;">Check the entity id and your API key, then try again.</p>
       </section>
     `;
@@ -5279,7 +5279,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
             </button>
             <button class="menu-item" type="button" role="menuitem" data-open-modal="internal-transfer">
               <div class="menu-title">Transfer between accounts</div>
-              <div class="menu-desc">Move funds between your Increase accounts.</div>
+              <div class="menu-desc">Move funds between your accounts.</div>
             </button>
             <button class="menu-item" type="button" role="menuitem" data-open-modal="check-deposit">
               <div class="menu-title">Deposit a check</div>
@@ -5295,22 +5295,22 @@ app.get('/app/:section', requireAuth, async (req, res) => {
     const events = await listRecentEventsForUser(req.user.id, 8);
 
     let totalDisplay = '$0.00';
-    let statusLine = 'Connect your Increase accounts to show live balances and activity.';
+    let statusLine = 'Connect your accounts to show live balances and activity.';
 
     if (!hasIncrease) {
-      statusLine = 'Set INCREASE_API_KEY in your .env to connect Increase.';
+      statusLine = 'Set INCREASE_API_KEY in your .env to enable live data.';
     } else if (increaseError) {
-      statusLine = 'Unable to load Increase data. Check your API key and try again.';
+      statusLine = 'Unable to load data. Check your API key and try again.';
     } else if (!userAccountId) {
       totalDisplay = '—';
       statusLine = 'Finish compliance to provision your account.';
     } else if (totalBalanceCents != null) {
       totalDisplay = formatUsdFromCents(totalBalanceCents);
-      statusLine = 'Connected to Increase.';
+      statusLine = 'Connected.';
     }
 
     const increaseErrorHtml = increaseError
-      ? `<div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>`
+      ? `<div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>`
       : '';
 
     const modalsHtml = `
@@ -5483,7 +5483,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
             <div class="modal-error small" data-modal-error hidden></div>
           </form>
 
-          <p class="small" style="margin: 10px 2px 0;">Creates an Increase account transfer instantly.</p>
+          <p class="small" style="margin: 10px 2px 0;">Creates an instant transfer between your accounts.</p>
         </div>
       </div>
 
@@ -5532,7 +5532,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
             <div class="modal-error small" data-modal-error hidden></div>
           </form>
 
-          <p class="small" style="margin: 10px 2px 0;">Uploads front and back images to create a real deposit via Increase.</p>
+          <p class="small" style="margin: 10px 2px 0;">Uploads front and back images to create a real deposit.</p>
         </div>
       </div>
     `;
@@ -5602,7 +5602,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       </div>
     `;
   } else if (section === 'accounts') {
-    subtitle = 'Your Increase accounts';
+    subtitle = 'Your accounts';
 
     if (!hasIncrease) {
       content = `
@@ -5617,7 +5617,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       content = `
         <section class="card">
           <h2>Accounts</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
+          <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
@@ -5664,7 +5664,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
             </button>
             <button class="menu-item" type="button" role="menuitem" data-open-modal="internal-transfer">
               <div class="menu-title">Transfer between accounts</div>
-              <div class="menu-desc">Move funds between your Increase accounts.</div>
+              <div class="menu-desc">Move funds between your accounts.</div>
             </button>
             <button class="menu-item" type="button" role="menuitem" data-open-modal="check-deposit">
               <div class="menu-title">Deposit a check</div>
@@ -5690,7 +5690,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       content = `
         <section class="card">
           <h2>Transactions</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
+          <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
@@ -5931,7 +5931,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
                 <div class="modal-error small" data-modal-error hidden></div>
               </form>
 
-              <p class="small" style="margin: 10px 2px 0;">Creates an Increase account transfer instantly.</p>
+              <p class="small" style="margin: 10px 2px 0;">Creates an instant transfer between your accounts.</p>
             </div>
           </div>
 
@@ -5980,7 +5980,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
                 <div class="modal-error small" data-modal-error hidden></div>
               </form>
 
-              <p class="small" style="margin: 10px 2px 0;">Uploads front and back images to create a real deposit via Increase.</p>
+              <p class="small" style="margin: 10px 2px 0;">Uploads front and back images to create a real deposit.</p>
             </div>
           </div>
         `
@@ -6082,7 +6082,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         <section class="card">
           ${tabsHtml}
           <h2>Transfers</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
+          <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
@@ -6530,7 +6530,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       content = `
         <section class="card">
           <h2>Cards</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
+          <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
@@ -6715,7 +6715,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       content = `
         <section class="card">
           <h2>Account Numbers</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
+          <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
@@ -7043,7 +7043,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
           <section class="card" style="grid-column: 1 / -1;">
             <h2>Provision account</h2>
-            <p class="muted" style="margin: 0;">Creates your Increase account, account number, and lockbox.</p>
+            <p class="muted" style="margin: 0;">Creates your account, account number, and lockbox.</p>
             ${provisioningSummary}
 
             <form class="form" data-form="onboarding-provision" style="margin-top: 14px;">
@@ -7080,7 +7080,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       content = `
         <section class="card">
           <h2>Compliance</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
+          <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
@@ -7355,13 +7355,13 @@ app.get('/app/:section', requireAuth, async (req, res) => {
               </button>
               <button class="menu-item" type="button" role="menuitem" data-open-modal="upload-file">
                 <div class="menu-title">Upload file</div>
-                <div class="menu-desc">Send a document to Increase (limited purposes).</div>
+                <div class="menu-desc">Upload a document (limited purposes).</div>
               </button>
             </div>
           </details>
         `
         : `<button class="btn" type="button" disabled title="${
-            hasIncrease ? 'Unable to load Increase data' : 'Set INCREASE_API_KEY to enable'
+            hasIncrease ? 'Unable to load data' : 'Set INCREASE_API_KEY to enable'
           }">Create</button>`;
     } else {
       actionsHtml = '';
@@ -7380,7 +7380,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         <section class="card">
           ${tabsHtml}
           <h2>Documents</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
+          <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
@@ -7684,7 +7684,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
               <div class="modal-error small" data-modal-error hidden></div>
             </form>
 
-            <p class="small" style="margin: 10px 2px 0;">Some file purposes (like statements) are generated by Increase and cannot be uploaded.</p>
+            <p class="small" style="margin: 10px 2px 0;">Some file purposes (like statements) are generated automatically and cannot be uploaded.</p>
           </div>
         </div>
       `;
@@ -7736,7 +7736,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       content = `
         <section class="card">
           <h2>Lockboxes</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
+          <div class="alert" role="alert"><strong>Dodo Checks:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
