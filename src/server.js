@@ -7279,7 +7279,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
                 <input name="address_line2" type="text" value="${esc(addr2Val)}" />
               </label>
 
-              <div style="display:grid; grid-template-columns: 1fr 120px 140px; gap: 12px;">
+              <div style="display:grid; grid-template-columns: 1fr 120px 140px auto; gap: 12px; align-items: start;">
                 <label class="field" style="margin: 0;">
                   <span>City</span>
                   <input name="city" type="text" value="${esc(cityVal)}" required />
@@ -7292,10 +7292,10 @@ app.get('/app/:section', requireAuth, async (req, res) => {
                   <span>ZIP</span>
                   <input name="zip" type="text" value="${esc(zipVal)}" required />
                 </label>
-              </div>
 
-              <div class="modal-actions" style="margin-top: 14px;">
-                <button class="btn-primary" type="submit">Save</button>
+                <div style="display:flex; justify-content:flex-end; align-items:flex-end; align-self: end;">
+                  <button class="btn-primary" type="submit">Save</button>
+                </div>
               </div>
 
               <div class="modal-error small" data-modal-error hidden></div>
