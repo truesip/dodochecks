@@ -251,6 +251,122 @@ function getTxAmountCents(tx) {
   return typeof maybe === 'number' ? maybe : null;
 }
 
+function findFirstIdByPrefixes(value, prefixes, depth = 0, seen) {
+  const maxDepth = 8;
+  if (!prefixes || prefixes.length === 0) return '';
+  if (value == null) return '';
+  if (depth > maxDepth) return '';
+
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (!s) return '';
+    for (const p of prefixes) {
+      if (s.startsWith(p)) return s;
+    }
+    return '';
+  }
+
+  if (typeof value !== 'object') return '';
+
+  if (!seen) seen = new Set();
+  if (seen.has(value)) return '';
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findFirstIdByPrefixes(item, prefixes, depth + 1, seen);
+      if (found) return found;
+    }
+    return '';
+  }
+
+  for (const v of Object.values(value)) {
+    const found = findFirstIdByPrefixes(v, prefixes, depth + 1, seen);
+    if (found) return found;
+  }
+
+  return '';
+}
+
+function findCancelableTransferId(tx) {
+  const prefixes = ['ach_transfer_', 'wire_transfer_', 'check_transfer_', 'real_time_payments_transfer_'];
+  if (!tx || typeof tx !== 'object') return '';
+  return (
+    findFirstIdByPrefixes(tx.source, prefixes) ||
+    findFirstIdByPrefixes(tx, prefixes)
+  );
+}
+
+function findInboundAchTransferId(tx) {
+  const prefixes = ['inbound_ach_transfer_'];
+  if (!tx || typeof tx !== 'object') return '';
+  return (
+    findFirstIdByPrefixes(tx.source, prefixes) ||
+    findFirstIdByPrefixes(tx, prefixes)
+  );
+}
+
+function redactForUi(value, path = []) {
+  if (value == null) return value;
+
+  if (Array.isArray(value)) {
+    return value.map((v) => redactForUi(v, path));
+  }
+
+  if (typeof value === 'object') {
+    const out = {};
+    const parentKey = path[path.length - 1];
+    const parentKeyLower = parentKey ? String(parentKey).toLowerCase() : '';
+
+    for (const [k, v] of Object.entries(value)) {
+      const key = String(k);
+      const keyLower = key.toLowerCase();
+      const nextPath = path.concat(key);
+
+      const isAddressObject = parentKeyLower.includes('address');
+      const isSensitiveAddressField =
+        isAddressObject &&
+        (keyLower === 'line1' ||
+          keyLower === 'line2' ||
+          keyLower === 'city' ||
+          keyLower === 'state' ||
+          keyLower === 'zip' ||
+          keyLower === 'postal_code' ||
+          keyLower === 'country');
+
+      if (
+        keyLower === 'account_number' ||
+        keyLower === 'routing_number' ||
+        keyLower === 'api_key' ||
+        keyLower === 'token' ||
+        keyLower === 'authorization' ||
+        keyLower === 'identification_number' ||
+        keyLower === 'tax_identifier' ||
+        keyLower === 'tax_identification_number' ||
+        keyLower === 'taxpayer_identification_number' ||
+        keyLower === 'ssn' ||
+        keyLower === 'social_security_number' ||
+        keyLower === 'email' ||
+        keyLower === 'phone' ||
+        keyLower === 'date_of_birth' ||
+        keyLower === 'recipient_name' ||
+        keyLower === 'creditor_name' ||
+        keyLower === 'name' ||
+        (keyLower === 'number' && parentKeyLower === 'identification') ||
+        isSensitiveAddressField
+      ) {
+        out[key] = '[REDACTED]';
+      } else {
+        out[key] = redactForUi(v, nextPath);
+      }
+    }
+
+    return out;
+  }
+
+  return value;
+}
+
 function getTransferDescription(transfer) {
   if (!transfer || typeof transfer !== 'object') return '';
   return String(
@@ -648,6 +764,178 @@ app.get('/api/transactions/export.csv', requireAuthApi, async (req, res) => {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.type('text/csv').send(csv);
+  } catch (err) {
+    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+  }
+});
+
+app.post('/api/pending-transactions/:pendingTransactionId/release', requireAuthApi, async (req, res) => {
+  if (!env('INCREASE_API_KEY')) {
+    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+    return;
+  }
+
+  const pendingTransactionId = String(req.params.pendingTransactionId || '').trim();
+  if (!pendingTransactionId) {
+    res.status(400).json({ error: 'pendingTransactionId is required' });
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
+  try {
+    const increase = createIncreaseClient();
+
+    const pending = await increase.retrievePendingTransaction({ pendingTransactionId });
+    const pendingAccountId = String(pending?.account_id || '').trim();
+
+    if (pendingAccountId && pendingAccountId !== accountId) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+
+    const released = await increase.releasePendingTransaction({ pendingTransactionId });
+
+    createAuditEvent({
+      userId: req.user.id,
+      type: 'increase.pending_transaction.released',
+      payload: { pending_transaction_id: pendingTransactionId },
+    });
+
+    res.status(200).json(released);
+  } catch (err) {
+    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+  }
+});
+
+app.post('/api/transactions/:transactionId/cancel', requireAuthApi, async (req, res) => {
+  if (!env('INCREASE_API_KEY')) {
+    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+    return;
+  }
+
+  const transactionId = String(req.params.transactionId || '').trim();
+  if (!transactionId) {
+    res.status(400).json({ error: 'transactionId is required' });
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
+  try {
+    const increase = createIncreaseClient();
+
+    const tx = await increase.retrieveTransaction({ transactionId });
+    const txAccountId = String(tx?.account_id || '').trim();
+
+    if (txAccountId && txAccountId !== accountId) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+
+    const transferId = findCancelableTransferId(tx);
+    if (!transferId) {
+      res.status(400).json({ error: 'cancel_not_supported_for_transaction' });
+      return;
+    }
+
+    let canceled;
+
+    if (transferId.startsWith('ach_transfer_')) {
+      canceled = await increase.cancelAchTransfer({ achTransferId: transferId });
+    } else if (transferId.startsWith('wire_transfer_')) {
+      canceled = await increase.cancelWireTransfer({ wireTransferId: transferId });
+    } else if (transferId.startsWith('check_transfer_')) {
+      canceled = await increase.cancelCheckTransfer({ checkTransferId: transferId });
+    } else if (transferId.startsWith('real_time_payments_transfer_')) {
+      canceled = await increase.cancelRealTimePaymentsTransfer({ realTimePaymentsTransferId: transferId });
+    } else {
+      res.status(400).json({ error: 'cancel_not_supported_for_transfer_type' });
+      return;
+    }
+
+    createAuditEvent({
+      userId: req.user.id,
+      type: 'increase.transfer.canceled',
+      payload: { transaction_id: transactionId, transfer_id: transferId },
+    });
+
+    res.status(200).json(canceled);
+  } catch (err) {
+    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+  }
+});
+
+app.post('/api/transactions/:transactionId/return-inbound-ach', requireAuthApi, async (req, res) => {
+  if (!env('INCREASE_API_KEY')) {
+    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+    return;
+  }
+
+  const transactionId = String(req.params.transactionId || '').trim();
+  if (!transactionId) {
+    res.status(400).json({ error: 'transactionId is required' });
+    return;
+  }
+
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) {
+    res.status(400).json({ error: 'reason is required' });
+    return;
+  }
+
+  // Basic validation; Increase enforces the actual enum.
+  if (!/^[a-z0-9_\-]+$/i.test(reason) || reason.length > 100) {
+    res.status(400).json({ error: 'reason must be 100 characters or fewer and contain only letters, numbers, underscore, or dash' });
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
+  try {
+    const increase = createIncreaseClient();
+
+    const tx = await increase.retrieveTransaction({ transactionId });
+    const txAccountId = String(tx?.account_id || '').trim();
+
+    if (txAccountId && txAccountId !== accountId) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+
+    const inboundAchTransferId = findInboundAchTransferId(tx);
+    if (!inboundAchTransferId) {
+      res.status(400).json({ error: 'return_not_supported_for_transaction' });
+      return;
+    }
+
+    const returned = await increase.returnInboundAchTransfer({ inboundAchTransferId, reason });
+
+    createAuditEvent({
+      userId: req.user.id,
+      type: 'increase.inbound_ach_transfer.returned',
+      payload: { transaction_id: transactionId, inbound_ach_transfer_id: inboundAchTransferId, reason },
+    });
+
+    res.status(200).json(returned);
   } catch (err) {
     res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
   }
@@ -3276,6 +3564,334 @@ app.get('/app/account-numbers/:accountNumberId', requireAuth, async (req, res) =
   );
 });
 
+app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
+  const transactionId = String(req.params.transactionId || '').trim();
+  if (!transactionId) {
+    res.status(404).type('text/plain').send('Not found');
+    return;
+  }
+
+  const hasIncrease = Boolean(env('INCREASE_API_KEY'));
+
+  let title = 'Transaction';
+  let subtitle = 'Transaction details';
+  let actionsHtml = `<a class="btn" href="/app/transactions">Back</a>`;
+  let content = '';
+
+  if (!hasIncrease) {
+    content = `
+      <section class="card">
+        <h2>Transaction</h2>
+        <p class="muted" style="margin: 0;">Set <code>INCREASE_API_KEY</code> in your .env to load transaction data.</p>
+      </section>
+    `;
+
+    res.type('html').send(
+      renderAppLayout({
+        title,
+        subtitle,
+        activeKey: 'transactions',
+        user: req.user,
+        content,
+        actionsHtml,
+      })
+    );
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    content = `
+      <section class="card">
+        <h2>Transaction</h2>
+        <p class="muted" style="margin: 0;">Finish compliance and provision your account to view transactions.</p>
+        <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+          <a class="btn-primary" href="/app/compliance">Go to Compliance</a>
+          <a class="btn" href="/app/overview">Back to Overview</a>
+        </div>
+      </section>
+    `;
+
+    res.type('html').send(
+      renderAppLayout({
+        title,
+        subtitle,
+        activeKey: 'transactions',
+        user: req.user,
+        content,
+        actionsHtml,
+      })
+    );
+    return;
+  }
+
+  const increase = createIncreaseClient();
+
+  let tx = null;
+  let kind = 'completed';
+
+  try {
+    try {
+      tx = await increase.retrieveTransaction({ transactionId });
+      kind = 'completed';
+    } catch (err) {
+      if (Number(err?.status) === 404) {
+        tx = await increase.retrievePendingTransaction({ pendingTransactionId: transactionId });
+        kind = 'pending';
+      } else {
+        throw err;
+      }
+    }
+
+    const txAccountId = String(tx?.account_id || '').trim();
+    if (txAccountId && txAccountId !== accountId) {
+      res.status(404).type('text/plain').send('Not found');
+      return;
+    }
+
+    const id = String(tx?.id || transactionId).trim();
+    const created = formatShortDateTime(tx?.created_at || tx?.created || '');
+    const desc = String(tx?.description || tx?.memo || '').trim();
+
+    const category = getTxCategory(tx);
+
+    const amountCents = getTxAmountCents(tx);
+    const amount = amountCents == null ? '—' : formatUsdFromCents(amountCents);
+    const routeTypeRaw = String(tx?.route_type || '').trim();
+    const routeTypeLabel = routeTypeRaw ? humanizeEnum(routeTypeRaw) : '';
+    const routeId = String(tx?.route_id || '').trim();
+
+    let routeIdHtml = routeId ? `<code>${esc(routeId)}</code>` : '—';
+    if (routeId && routeTypeRaw === 'card') {
+      routeIdHtml = `<a href="/app/cards/${encodeURIComponent(routeId)}"><code>${esc(routeId)}</code></a>`;
+    } else if (routeId && routeTypeRaw === 'account_number') {
+      routeIdHtml = `<a href="/app/account-numbers/${encodeURIComponent(routeId)}"><code>${esc(routeId)}</code></a>`;
+    }
+
+    const statusLabel = kind === 'pending' ? 'Pending' : 'Completed';
+    const dotClass = kind === 'pending' ? 'tx-dot pending' : 'tx-dot completed';
+
+    const sourceCategoryRaw = String(tx?.source?.category || '').trim();
+    const sourceCategoryLabel = sourceCategoryRaw ? humanizeEnum(sourceCategoryRaw) : '';
+
+    const cancelableTransferId = findCancelableTransferId(tx);
+    const inboundAchTransferId = findInboundAchTransferId(tx);
+
+    title = desc || category || 'Transaction';
+    subtitle = [statusLabel, id ? `ID ${id}` : ''].filter(Boolean).join(' · ');
+
+    const rawObj = tx?.source && typeof tx.source === 'object' ? tx.source : tx;
+    const rawJson = esc(JSON.stringify(redactForUi(rawObj), null, 2));
+
+    const detailsCard = `
+      <section class="card">
+        <h2>Details</h2>
+        <div class="kv">
+          <div class="k">Status</div>
+          <div class="v"><span class="pill" style="display:inline-flex;align-items:center;gap:8px;"><span class="${dotClass}" aria-hidden="true"></span>${esc(statusLabel)}</span></div>
+
+          <div class="k">Amount</div>
+          <div class="v">${esc(amount)}</div>
+
+          <div class="k">Category</div>
+          <div class="v">${esc(category || '—')}</div>
+
+          <div class="k">Description</div>
+          <div class="v">${esc(desc || '—')}</div>
+
+          <div class="k">Created</div>
+          <div class="v">${esc(created || '—')}</div>
+
+          <div class="k">Account</div>
+          <div class="v"><code>${esc(String(tx?.account_id || accountId))}</code></div>
+
+          <div class="k">Route</div>
+          <div class="v">${routeTypeLabel ? `${esc(routeTypeLabel)} · ` : ''}${routeIdHtml}</div>
+
+          <div class="k">Transaction ID</div>
+          <div class="v"><code>${esc(id)}</code></div>
+
+          <div class="k">Source</div>
+          <div class="v">${esc(sourceCategoryLabel || sourceCategoryRaw || '—')}</div>
+        </div>
+
+        <details style="margin-top: 14px;">
+          <summary class="btn">Raw source (sanitized)</summary>
+          <pre class="small" style="white-space: pre-wrap; margin: 12px 0 0;">${rawJson}</pre>
+        </details>
+      </section>
+    `;
+
+    const actionButtons = [];
+
+    if (kind === 'pending') {
+      actionButtons.push(
+        `<button class="btn-primary" type="button" data-open-modal="tx-release">Release pending transaction</button>`
+      );
+    }
+
+    if (cancelableTransferId) {
+      actionButtons.push(`<button class="btn" type="button" data-open-modal="tx-cancel">Cancel transfer</button>`);
+    }
+
+    if (inboundAchTransferId) {
+      actionButtons.push(`<button class="btn" type="button" data-open-modal="tx-return-inbound-ach">Return inbound ACH</button>`);
+    }
+
+    const actionsCard = `
+      <section class="card">
+        <h2>Actions</h2>
+        <div class="alert" data-inline-error hidden></div>
+
+        ${
+          actionButtons.length
+            ? `<div style="display:flex; gap: 10px; flex-wrap: wrap;">${actionButtons.join('')}</div>`
+            : '<div class="small">No actions available for this transaction.</div>'
+        }
+
+        ${
+          cancelableTransferId
+            ? `<div class="small" style="margin-top: 12px;">Transfer: <code>${esc(cancelableTransferId)}</code></div>`
+            : ''
+        }
+
+        ${
+          inboundAchTransferId
+            ? `<div class="small" style="margin-top: 8px;">Inbound ACH: <code>${esc(inboundAchTransferId)}</code></div>`
+            : ''
+        }
+
+        <p class="small" style="margin: 12px 2px 0;">These actions call real Increase endpoints. No simulations are available.</p>
+      </section>
+    `;
+
+    const releaseModal =
+      kind === 'pending'
+        ? `
+          <div class="modal" data-modal="tx-release" hidden>
+            <div class="modal-backdrop" data-close-modal></div>
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Release pending transaction">
+              <div class="modal-head">
+                <h2>Release pending transaction</h2>
+                <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
+              </div>
+
+              <p class="muted" style="margin: 0;">This will release the pending transaction in Increase.</p>
+
+              <form class="form" data-form="tx-release">
+                <input type="hidden" name="pending_transaction_id" value="${esc(id)}" />
+
+                <div class="modal-actions">
+                  <button class="btn" type="button" data-close-modal>Cancel</button>
+                  <button class="btn-primary" type="submit">Release</button>
+                </div>
+
+                <div class="modal-error small" data-modal-error hidden></div>
+              </form>
+            </div>
+          </div>
+        `
+        : '';
+
+    const cancelModal =
+      cancelableTransferId
+        ? `
+          <div class="modal" data-modal="tx-cancel" hidden>
+            <div class="modal-backdrop" data-close-modal></div>
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Cancel transfer">
+              <div class="modal-head">
+                <h2>Cancel transfer</h2>
+                <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
+              </div>
+
+              <p class="muted" style="margin: 0;">This will attempt to cancel the underlying transfer in Increase.</p>
+              <p class="small" style="margin: 10px 2px 0;">Transfer: <code>${esc(cancelableTransferId)}</code></p>
+
+              <form class="form" data-form="tx-cancel">
+                <input type="hidden" name="transaction_id" value="${esc(id)}" />
+
+                <div class="modal-actions">
+                  <button class="btn" type="button" data-close-modal>Nevermind</button>
+                  <button class="btn-primary" type="submit">Cancel transfer</button>
+                </div>
+
+                <div class="modal-error small" data-modal-error hidden></div>
+              </form>
+            </div>
+          </div>
+        `
+        : '';
+
+    const returnInboundAchModal =
+      inboundAchTransferId
+        ? `
+          <div class="modal" data-modal="tx-return-inbound-ach" hidden>
+            <div class="modal-backdrop" data-close-modal></div>
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Return inbound ACH">
+              <div class="modal-head">
+                <h2>Return inbound ACH</h2>
+                <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
+              </div>
+
+              <p class="muted" style="margin: 0;">This will submit a return for the inbound ACH transfer in Increase.</p>
+              <p class="small" style="margin: 10px 2px 0;">Inbound ACH: <code>${esc(inboundAchTransferId)}</code></p>
+
+              <form class="form" data-form="tx-return-inbound-ach">
+                <input type="hidden" name="transaction_id" value="${esc(id)}" />
+
+                <label class="field">
+                  <span>Reason</span>
+                  <input name="reason" type="text" required placeholder="e.g. insufficient_funds" />
+                </label>
+
+                <div class="modal-actions">
+                  <button class="btn" type="button" data-close-modal>Cancel</button>
+                  <button class="btn-primary" type="submit">Return</button>
+                </div>
+
+                <div class="modal-error small" data-modal-error hidden></div>
+              </form>
+
+              <p class="small" style="margin: 10px 2px 0;">Reason must match Increase’s return reason enum.</p>
+            </div>
+          </div>
+        `
+        : '';
+
+    content = `
+      <section class="grid">
+        ${detailsCard}
+        ${actionsCard}
+      </section>
+
+      ${releaseModal}
+      ${cancelModal}
+      ${returnInboundAchModal}
+    `;
+  } catch (err) {
+    content = `
+      <section class="card">
+        <h2>Transaction</h2>
+        <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(err?.message || 'error'))}</div>
+        <p class="muted" style="margin: 0;">Check the transaction id and your API key, then try again.</p>
+      </section>
+    `;
+  }
+
+  res.type('html').send(
+    renderAppLayout({
+      title,
+      subtitle,
+      activeKey: 'transactions',
+      user: req.user,
+      content,
+      actionsHtml,
+    })
+  );
+});
+
 app.get('/app/compliance/:entityId', requireAuth, async (req, res) => {
   const entityId = String(req.params.entityId || '').trim();
   if (!entityId) {
@@ -4659,6 +5275,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
       function renderTxRow(tx, status) {
         const created = formatShortDateTime(tx.created_at || tx.created || '');
+        const id = String(tx.id || '').trim();
         const desc = String(tx.description || tx.memo || tx.id || '');
         const acctId = String(tx.account_id || '');
         const acctName = accountNameById.get(acctId) || acctId || '—';
@@ -4668,16 +5285,21 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         const neg = typeof amountCents === 'number' && amountCents < 0;
 
         const dotClass = status === 'pending' ? 'tx-dot pending' : 'tx-dot completed';
+        const href = id ? `/app/transactions/${encodeURIComponent(id)}` : '';
 
-        return `
-          <div class="tx-row">
-            <div class="tx-created"><span class="${dotClass}" aria-hidden="true"></span>${esc(created)}</div>
-            <div class="tx-desc">${esc(desc)}</div>
-            <div class="tx-acct">${esc(acctName)}</div>
-            <div class="tx-cat">${esc(category)}</div>
-            <div class="tx-amt${neg ? ' neg' : ''}">${esc(amount)}</div>
-          </div>
+        const inner = `
+          <div class=\"tx-created\"><span class=\"${dotClass}\" aria-hidden=\"true\"></span>${esc(created)}</div>
+          <div class=\"tx-desc\">${esc(desc)}</div>
+          <div class=\"tx-acct\">${esc(acctName)}</div>
+          <div class=\"tx-cat\">${esc(category)}</div>
+          <div class=\"tx-amt${neg ? ' neg' : ''}\">${esc(amount)}</div>
         `;
+
+        if (!href) {
+          return `<div class=\"tx-row\">${inner}</div>`;
+        }
+
+        return `<a class=\"tx-row tx-row-link\" href=\"${esc(href)}\" aria-label=\"View transaction ${esc(desc || id)}\">${inner}</a>`;
       }
 
       const pendingRows = pendingTransactions.map((t) => renderTxRow(t, 'pending')).join('');

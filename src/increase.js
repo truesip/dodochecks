@@ -266,7 +266,14 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // Transactions
     listTransactions: (query) => request({ method: 'GET', pathname: '/transactions', query }),
+    retrieveTransaction: ({ transactionId }) =>
+      request({ method: 'GET', pathname: `/transactions/${encodeURIComponent(transactionId)}` }),
+
     listPendingTransactions: (query) => request({ method: 'GET', pathname: '/pending_transactions', query }),
+    retrievePendingTransaction: ({ pendingTransactionId }) =>
+      request({ method: 'GET', pathname: `/pending_transactions/${encodeURIComponent(pendingTransactionId)}` }),
+    releasePendingTransaction: ({ pendingTransactionId }) =>
+      request({ method: 'POST', pathname: `/pending_transactions/${encodeURIComponent(pendingTransactionId)}/release` }),
 
     // Cards
     listCards: (query) => request({ method: 'GET', pathname: '/cards', query }),
@@ -310,6 +317,14 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // Inbound ACH Transfers
     listInboundAchTransfers: (query) => request({ method: 'GET', pathname: '/inbound_ach_transfers', query }),
+    returnInboundAchTransfer: ({ inboundAchTransferId, reason }) =>
+      request({
+        method: 'POST',
+        pathname: `/inbound_ach_transfers/${encodeURIComponent(inboundAchTransferId)}/transfer_return`,
+        body: {
+          reason,
+        },
+      }),
 
     // External Accounts
     listExternalAccounts: (query) => request({ method: 'GET', pathname: '/external_accounts', query }),
@@ -439,6 +454,8 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // Transfers
     listAchTransfers: (query) => request({ method: 'GET', pathname: '/ach_transfers', query }),
+    cancelAchTransfer: ({ achTransferId }) =>
+      request({ method: 'POST', pathname: `/ach_transfers/${encodeURIComponent(achTransferId)}/cancel` }),
     createAchTransfer: ({
       accountId,
       routingNumber,
@@ -458,6 +475,18 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
           amount: amountCents,
           statement_descriptor: statementDescriptor,
         },
+      }),
+
+    cancelCheckTransfer: ({ checkTransferId }) =>
+      request({ method: 'POST', pathname: `/check_transfers/${encodeURIComponent(checkTransferId)}/cancel` }),
+
+    cancelWireTransfer: ({ wireTransferId }) =>
+      request({ method: 'POST', pathname: `/wire_transfers/${encodeURIComponent(wireTransferId)}/cancel` }),
+
+    cancelRealTimePaymentsTransfer: ({ realTimePaymentsTransferId }) =>
+      request({
+        method: 'POST',
+        pathname: `/real_time_payments_transfers/${encodeURIComponent(realTimePaymentsTransferId)}/cancel`,
       }),
 
     // Check transfers (mail checks)

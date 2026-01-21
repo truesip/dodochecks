@@ -1145,4 +1145,91 @@
       }
     });
   });
+
+  // Transaction detail: release pending transaction
+  qsa('form[data-form="tx-release"]').forEach(function (form) {
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      var modal = form.closest('.modal');
+      var submit = qs('button[type="submit"]', form);
+
+      var pendingId = String(qs('[name="pending_transaction_id"]', form).value || '').trim();
+      if (!pendingId) {
+        setModalError(modal, 'Pending transaction is required.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/pending-transactions/' + encodeURIComponent(pendingId) + '/release', {});
+        window.location.reload();
+      } catch (err) {
+        setModalError(modal, err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
+
+  // Transaction detail: cancel underlying transfer
+  qsa('form[data-form="tx-cancel"]').forEach(function (form) {
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      var modal = form.closest('.modal');
+      var submit = qs('button[type="submit"]', form);
+
+      var transactionId = String(qs('[name="transaction_id"]', form).value || '').trim();
+      if (!transactionId) {
+        setModalError(modal, 'Transaction is required.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/transactions/' + encodeURIComponent(transactionId) + '/cancel', {});
+        window.location.reload();
+      } catch (err) {
+        setModalError(modal, err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
+
+  // Transaction detail: return inbound ACH
+  qsa('form[data-form="tx-return-inbound-ach"]').forEach(function (form) {
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      var modal = form.closest('.modal');
+      var submit = qs('button[type="submit"]', form);
+
+      var transactionId = String(qs('[name="transaction_id"]', form).value || '').trim();
+      var reason = String(qs('[name="reason"]', form).value || '').trim();
+
+      if (!transactionId) {
+        setModalError(modal, 'Transaction is required.');
+        return;
+      }
+
+      if (!reason) {
+        setModalError(modal, 'Reason is required.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/transactions/' + encodeURIComponent(transactionId) + '/return-inbound-ach', {
+          reason: reason,
+        });
+        window.location.reload();
+      } catch (err) {
+        setModalError(modal, err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
 })();
