@@ -7515,7 +7515,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       const rows = files.map((f) => renderFileRow(f)).join('');
       const emptyState =
         !rows
-          ? '<div class="tx-empty">Tax forms and fee statements are not available yet in this demo. Use Exports instead.</div>'
+          ? '<div class="tx-empty">Tax forms and fees are not available yet. Use Exports instead.</div>'
           : '';
 
       content = `
