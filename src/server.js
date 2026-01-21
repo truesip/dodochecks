@@ -4033,6 +4033,21 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         increaseAccounts = account ? [account] : [];
       }
 
+      // For the Overview page, show the user's primary routing + account number.
+      // We retrieve it directly from Increase using the stored account_number_id.
+      if (section === 'overview' && userAccountNumberId) {
+        const an = await increase
+          .retrieveAccountNumber({ accountNumberId: userAccountNumberId })
+          .catch(() => null);
+
+        const anAccountId = an?.account_id ? String(an.account_id).trim() : '';
+        const expectedAccountId = userAccountId ? String(userAccountId).trim() : '';
+
+        if (an && (!expectedAccountId || !anAccountId || anAccountId === expectedAccountId)) {
+          accountNumbers = [an];
+        }
+      }
+
       if (needsBalances && userAccountId) {
         try {
           const balResp = await increase.getAccountBalance({ accountId: userAccountId });
@@ -4444,6 +4459,31 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       </div>
     `;
 
+    const primaryAccountNumber =
+      accountNumbers.find((an) => String(an?.id || '').trim() === userAccountNumberId) ||
+      accountNumbers[0] ||
+      null;
+    const routingNumber = primaryAccountNumber ? String(primaryAccountNumber.routing_number || '').trim() : '';
+    const accountNumber = primaryAccountNumber ? String(primaryAccountNumber.account_number || '').trim() : '';
+
+    const bankDetailsHtml = userAccountId
+      ? routingNumber && accountNumber
+        ? `
+          <div style="margin-top: 12px;">
+            <div class="small">Routing number</div>
+            <div class="value" style="font-size: 22px;"><code>${esc(routingNumber)}</code></div>
+
+            <div class="small" style="margin-top: 10px;">Account number</div>
+            <div class="value" style="font-size: 22px;"><code>${esc(accountNumber)}</code></div>
+
+            <p class="small" style="margin: 10px 0 0;">
+              Use these details to receive inbound ACH / direct deposit.
+            </p>
+          </div>
+        `
+        : `<p class="muted" style="margin: 10px 0 0;">Account number not available yet.</p>`
+      : `<p class="muted" style="margin: 10px 0 0;">Finish compliance to provision your account.</p>`;
+
     content = `
       ${increaseErrorHtml}
       <div class="grid">
@@ -4457,13 +4497,8 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         </section>
 
         <section class="card">
-          <h2>Quick actions</h2>
-          <p class="muted" style="margin: 0;">Send and deposit checks, and transfer money.</p>
-          <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
-            <span class="pill">Deposit a check</span>
-            <span class="pill">Positive Pay</span>
-            <span class="pill">Lockboxes</span>
-          </div>
+          <h2>Account details</h2>
+          ${bankDetailsHtml}
         </section>
 
         <section class="card" style="grid-column: 1 / -1;">
