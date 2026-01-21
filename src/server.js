@@ -3813,9 +3813,6 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
     title = desc || category || 'Transaction';
     subtitle = [statusLabel, id ? `ID ${id}` : ''].filter(Boolean).join(' · ');
 
-    const rawObj = tx?.source && typeof tx.source === 'object' ? tx.source : tx;
-    const rawJson = esc(JSON.stringify(redactForUi(rawObj), null, 2));
-
     const detailsCard = `
       <section class="card">
         <h2>Details</h2>
@@ -3848,10 +3845,6 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
           <div class="v">${esc(sourceCategoryLabel || sourceCategoryRaw || '—')}</div>
         </div>
 
-        <details style="margin-top: 14px;">
-          <summary class="btn">Raw source (sanitized)</summary>
-          <pre class="small" style="white-space: pre-wrap; margin: 12px 0 0;">${rawJson}</pre>
-        </details>
       </section>
     `;
 
@@ -3882,19 +3875,6 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
             : '<div class="small">No actions available for this transaction.</div>'
         }
 
-        ${
-          cancelableTransferId
-            ? `<div class="small" style="margin-top: 12px;">Transfer: <code>${esc(cancelableTransferId)}</code></div>`
-            : ''
-        }
-
-        ${
-          inboundAchTransferId
-            ? `<div class="small" style="margin-top: 8px;">Inbound ACH: <code>${esc(inboundAchTransferId)}</code></div>`
-            : ''
-        }
-
-        <p class="small" style="margin: 12px 2px 0;">These actions call real Increase endpoints. No simulations are available.</p>
       </section>
     `;
 
@@ -4185,8 +4165,6 @@ app.get('/app/transfers/:transferId', requireAuth, async (req, res) => {
       .filter(Boolean)
       .join(' · ');
 
-    const rawJson = esc(JSON.stringify(redactForUi(transfer), null, 2));
-
     // Extra details by transfer type
     let extra = '';
 
@@ -4337,10 +4315,6 @@ app.get('/app/transfers/:transferId', requireAuth, async (req, res) => {
           ${extra}
         </div>
 
-        <details style="margin-top: 14px;">
-          <summary class="btn">Raw (sanitized)</summary>
-          <pre class="small" style="white-space: pre-wrap; margin: 12px 0 0;">${rawJson}</pre>
-        </details>
       </section>
     `;
 
@@ -4372,7 +4346,6 @@ app.get('/app/transfers/:transferId', requireAuth, async (req, res) => {
             : '<div class="small">No actions available for this transfer.</div>'
         }
 
-        <p class="small" style="margin: 12px 2px 0;">These actions call real Increase endpoints. No simulations are available.</p>
       </section>
     `;
 
