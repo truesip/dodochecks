@@ -129,6 +129,16 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     }
 
     if (!res.ok) {
+      if (dbg) {
+        // eslint-disable-next-line no-console
+        console.log('[increase] error', {
+          method,
+          url,
+          status: res.status,
+          body: redact(json),
+        });
+      }
+
       const msg = typeof json === 'object' && json && json.error ? json.error : res.statusText;
       const err = new Error(`Increase API error (${res.status}): ${msg}`);
       err.status = res.status;
@@ -186,6 +196,16 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     }
 
     if (!res.ok) {
+      if (dbg) {
+        // eslint-disable-next-line no-console
+        console.log('[increase] error', {
+          method,
+          url,
+          status: res.status,
+          body: redact(json),
+        });
+      }
+
       const msg = typeof json === 'object' && json && json.error ? json.error : res.statusText;
       const err = new Error(`Increase API error (${res.status}): ${msg}`);
       err.status = res.status;

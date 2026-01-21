@@ -2208,8 +2208,9 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
               ? { line2: String(compliance.address_line2 || '').trim() }
               : {}),
             city: String(compliance.city || '').trim(),
-            state: String(compliance.state || '').trim(),
-            postal_code: String(compliance.zip || '').trim(),
+            state: String(compliance.state || '').trim().toUpperCase(),
+            postal_code: digitsOnly(String(compliance.zip || '').trim()),
+            country: 'US',
           },
         },
         ...(fileIds.length ? { supplemental_documents: fileIds } : {}),
