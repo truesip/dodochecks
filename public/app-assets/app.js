@@ -597,28 +597,9 @@
       var submit = qs('button[type="submit"]', createExportForm);
 
       var category = String(qs('[name="category"]', createExportForm).value || '').trim();
-      var accountId = String(qs('[name="account_id"]', createExportForm).value || '').trim();
-
-      var statusIn = qsa('select[name="status_in"] option:checked', createExportForm)
-        .map(function (opt) {
-          return String(opt.value || '').trim();
-        })
-        .filter(Boolean);
 
       if (!category) {
         setModalError(modal, 'Category is required.');
-        return;
-      }
-
-      var needsAccount = ['transaction_csv', 'balance_csv', 'account_statement_ofx', 'account_statement_bai2'].indexOf(category) >= 0;
-
-      if (needsAccount && !accountId) {
-        setModalError(modal, 'Account is required for this export category.');
-        return;
-      }
-
-      if (category === 'entity_csv' && (!statusIn || statusIn.length === 0)) {
-        setModalError(modal, 'Select at least one entity status.');
         return;
       }
 
@@ -627,8 +608,6 @@
       try {
         await postJson('/api/exports', {
           category: category,
-          account_id: accountId || undefined,
-          status_in: statusIn && statusIn.length ? statusIn : undefined,
         });
         window.location.reload();
       } catch (err) {

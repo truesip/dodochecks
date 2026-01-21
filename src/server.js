@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 // Local development uses `.env.example` (when running `npm run dev`).
 // Production uses `.env` (when running `npm start`) or platform-provided env vars.
@@ -21,6 +22,21 @@ const {
   getUserByEmail,
   createAuditEvent,
   listRecentEventsForUser,
+
+  // Per-user data
+  getUserCompliance,
+  upsertUserCompliance,
+  addUserComplianceDocument,
+  listUserComplianceDocuments,
+
+  getUserIncrease,
+  upsertUserIncrease,
+
+  addUserExternalAccount,
+  listUserExternalAccounts,
+
+  addUserExport,
+  listUserExports,
 } = require('./db');
 const { setAuthCookie, clearAuthCookie, getAuthPayload, requireAuth } = require('./auth');
 const { esc, renderAuthPage, renderAppLayout } = require('./pages');
@@ -66,6 +82,47 @@ function parseBool(value, defaultValue = false) {
   const s = String(value).trim().toLowerCase();
   if (!s) return defaultValue;
   return ['1', 'true', 'yes', 'y', 'on'].includes(s);
+}
+
+function getDataEncryptionKey() {
+  // Base64-encoded 32-byte key (AES-256-GCM)
+  const raw = env('APP_DATA_ENCRYPTION_KEY');
+  if (!raw) return null;
+
+  let buf;
+  try {
+    buf = Buffer.from(String(raw), 'base64');
+  } catch {
+    return null;
+  }
+
+  if (buf.length !== 32) return null;
+  return buf;
+}
+
+function encryptString(plaintext) {
+  const key = getDataEncryptionKey();
+  if (!key) return null;
+
+  const value = String(plaintext || '');
+  if (!value) return null;
+
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return [iv.toString('base64'), ciphertext.toString('base64'), tag.toString('base64')].join('.');
+}
+
+function digitsOnly(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function ssnLast4(value) {
+  const digits = digitsOnly(value);
+  if (digits.length < 4) return '';
+  return digits.slice(-4);
 }
 
 const APP_DEBUG = parseBool(env('APP_DEBUG'), false);
@@ -306,10 +363,18 @@ app.get('/api/accounts', requireAuthApi, async (req, res) => {
     return;
   }
 
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.json({ data: [], next_cursor: null });
+    return;
+  }
+
   try {
     const increase = createIncreaseClient();
-    const accounts = await increase.listAccounts();
-    res.json(accounts);
+    const account = await increase.retrieveAccount({ accountId });
+    res.json({ data: account ? [account] : [], next_cursor: null });
   } catch (err) {
     res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
   }
@@ -321,6 +386,10 @@ app.post('/api/internal-transfers', requireAuthApi, async (req, res) => {
     res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
     return;
   }
+
+  // Consumer MVP only supports ACH/wires/checks; internal book transfers are disabled.
+  res.status(400).json({ error: 'not_supported' });
+  return;
 
   const fromAccountId = String(req.body?.from_account_id || '').trim();
   const toAccountNumberId = String(req.body?.to_account_number_id || '').trim();
@@ -396,17 +465,19 @@ app.post(
       return;
     }
 
-    const accountId = String(req.body?.account_id || '').trim();
+    const userIncrease = await getUserIncrease(req.user.id);
+    const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+    if (!accountId) {
+      res.status(400).json({ error: 'account_not_provisioned' });
+      return;
+    }
+
     const amountCentsRaw = Number(req.body?.amount_cents);
     const description = String(req.body?.description || '').trim();
 
     const frontFile = Array.isArray(req.files?.front) ? req.files.front[0] : null;
     const backFile = Array.isArray(req.files?.back) ? req.files.back[0] : null;
-
-    if (!accountId) {
-      res.status(400).json({ error: 'account_id is required' });
-      return;
-    }
 
     if (!Number.isInteger(amountCentsRaw) || amountCentsRaw <= 0) {
       res.status(400).json({ error: 'amount_cents must be an integer greater than 0' });
@@ -443,6 +514,7 @@ app.post(
         frontFileId: front?.id,
         backFileId: back?.id,
         description: description || undefined,
+        idempotencyKey: `user-${req.user.id}-check-deposit-${Date.now()}`,
       });
 
       createAuditEvent({
@@ -470,7 +542,14 @@ app.get('/api/transactions', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.query?.account_id || '').trim() || null;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
   const cursor = String(req.query?.cursor || '').trim() || null;
   const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
@@ -480,7 +559,7 @@ app.get('/api/transactions', requireAuthApi, async (req, res) => {
     const txs = await increase.listTransactions({
       limit,
       cursor,
-      account_id: accountId || undefined,
+      account_id: accountId,
     });
     res.json(txs);
   } catch (err) {
@@ -494,21 +573,24 @@ app.get('/api/transactions/export.csv', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.query?.account_id || '').trim() || null;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).type('text/plain').send('account_not_provisioned');
+    return;
+  }
 
   try {
     const increase = createIncreaseClient();
 
-    const [accountsResp, pendingResp, txsResp] = await Promise.all([
-      increase.listAccounts(),
-      increase.listPendingTransactions({ limit: 100, account_id: accountId || undefined }).catch(() => null),
-      increase.listTransactions({ limit: 100, account_id: accountId || undefined }),
+    const [account, pendingResp, txsResp] = await Promise.all([
+      increase.retrieveAccount({ accountId }).catch(() => null),
+      increase.listPendingTransactions({ limit: 100, account_id: accountId }).catch(() => null),
+      increase.listTransactions({ limit: 100, account_id: accountId }),
     ]);
 
-    const accounts = extractDataArray(accountsResp);
-    const accountNameById = new Map(
-      accounts.map((a) => [String(a.id || ''), String(a.name || a.id || '')])
-    );
+    const accountNameById = new Map([[accountId, String(account?.name || accountId)]]);
 
     const pending = extractDataArray(pendingResp);
     const txs = extractDataArray(txsResp);
@@ -537,7 +619,7 @@ app.get('/api/transactions/export.csv', requireAuthApi, async (req, res) => {
 
     const csv = `${header}\n${rows.join('\n')}\n`;
 
-    const filename = accountId ? `transactions_${accountId}.csv` : 'transactions.csv';
+    const filename = `transactions_${accountId}.csv`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.type('text/csv').send(csv);
@@ -552,7 +634,14 @@ app.get('/api/transfers', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.query?.account_id || '').trim() || null;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
   const cursor = String(req.query?.cursor || '').trim() || null;
   const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
@@ -562,7 +651,7 @@ app.get('/api/transfers', requireAuthApi, async (req, res) => {
     const transfers = await increase.listAchTransfers({
       limit,
       cursor,
-      account_id: accountId || undefined,
+      account_id: accountId,
     });
     res.json(transfers);
   } catch (err) {
@@ -576,20 +665,23 @@ app.get('/api/transfers/export.csv', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.query?.account_id || '').trim() || null;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).type('text/plain').send('account_not_provisioned');
+    return;
+  }
 
   try {
     const increase = createIncreaseClient();
 
-    const [accountsResp, transfersResp] = await Promise.all([
-      increase.listAccounts(),
-      increase.listAchTransfers({ limit: 100, account_id: accountId || undefined }),
+    const [account, transfersResp] = await Promise.all([
+      increase.retrieveAccount({ accountId }).catch(() => null),
+      increase.listAchTransfers({ limit: 100, account_id: accountId }),
     ]);
 
-    const accounts = extractDataArray(accountsResp);
-    const accountNameById = new Map(
-      accounts.map((a) => [String(a.id || ''), String(a.name || a.id || '')])
-    );
+    const accountNameById = new Map([[accountId, String(account?.name || accountId)]]);
 
     const transfers = extractDataArray(transfersResp);
 
@@ -609,7 +701,7 @@ app.get('/api/transfers/export.csv', requireAuthApi, async (req, res) => {
 
     const csv = `${header}\n${rows.join('\n')}\n`;
 
-    const filename = accountId ? `transfers_${accountId}.csv` : 'transfers.csv';
+    const filename = `transfers_${accountId}.csv`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.type('text/csv').send(csv);
@@ -619,12 +711,20 @@ app.get('/api/transfers/export.csv', requireAuthApi, async (req, res) => {
 });
 
 app.get('/api/cards', requireAuthApi, async (req, res) => {
+  // Cards are not part of the consumer MVP. Keep endpoint user-scoped to avoid data leaks.
   if (!env('INCREASE_API_KEY')) {
     res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
     return;
   }
 
-  const accountId = String(req.query?.account_id || '').trim() || null;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.json({ data: [], next_cursor: null });
+    return;
+  }
+
   const cursor = String(req.query?.cursor || '').trim() || null;
   const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
@@ -634,7 +734,7 @@ app.get('/api/cards', requireAuthApi, async (req, res) => {
     const cards = await increase.listCards({
       limit,
       cursor,
-      account_id: accountId || undefined,
+      account_id: accountId,
     });
     res.json(cards);
   } catch (err) {
@@ -648,7 +748,14 @@ app.get('/api/account-numbers', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.query?.account_id || '').trim() || null;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.json({ data: [], next_cursor: null });
+    return;
+  }
+
   const cursor = String(req.query?.cursor || '').trim() || null;
   const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
@@ -658,7 +765,7 @@ app.get('/api/account-numbers', requireAuthApi, async (req, res) => {
     const accountNumbers = await increase.listAccountNumbers({
       limit,
       cursor,
-      account_id: accountId || undefined,
+      account_id: accountId,
     });
     res.json(accountNumbers);
   } catch (err) {
@@ -672,17 +779,28 @@ app.get('/api/external-accounts', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const cursor = String(req.query?.cursor || '').trim() || null;
   const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
 
   try {
+    const mapped = await listUserExternalAccounts(req.user.id, limit);
+
     const increase = createIncreaseClient();
-    const externalAccounts = await increase.listExternalAccounts({
-      limit,
-      cursor,
-    });
-    res.json(externalAccounts);
+
+    const externalAccounts = [];
+    for (const row of mapped) {
+      const externalAccountId = String(row?.external_account_id || '').trim();
+      if (!externalAccountId) continue;
+
+      try {
+        const ea = await increase.retrieveExternalAccount({ externalAccountId });
+        if (ea) externalAccounts.push(ea);
+      } catch {
+        // ignore
+      }
+    }
+
+    res.json({ data: externalAccounts, next_cursor: null });
   } catch (err) {
     res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
   }
@@ -694,7 +812,14 @@ app.get('/api/lockboxes', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.query?.account_id || '').trim() || null;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.json({ data: [], next_cursor: null });
+    return;
+  }
+
   const cursor = String(req.query?.cursor || '').trim() || null;
   const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
@@ -704,7 +829,7 @@ app.get('/api/lockboxes', requireAuthApi, async (req, res) => {
     const lockboxes = await increase.listLockboxes({
       limit,
       cursor,
-      account_id: accountId || undefined,
+      account_id: accountId,
     });
     res.json(lockboxes);
   } catch (err) {
@@ -718,7 +843,14 @@ app.get('/api/account-statements', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.query?.account_id || '').trim() || null;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.json({ data: [], next_cursor: null });
+    return;
+  }
+
   const cursor = String(req.query?.cursor || '').trim() || null;
   const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
@@ -728,7 +860,7 @@ app.get('/api/account-statements', requireAuthApi, async (req, res) => {
     const statements = await increase.listAccountStatements({
       limit,
       cursor,
-      account_id: accountId || undefined,
+      account_id: accountId,
     });
     res.json(statements);
   } catch (err) {
@@ -973,22 +1105,28 @@ app.get('/api/exports', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const cursor = String(req.query?.cursor || '').trim() || null;
   const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
 
-  const status = String(req.query?.status || '').trim() || null;
-  const category = String(req.query?.category || '').trim() || null;
-
   try {
+    const mapped = await listUserExports(req.user.id, limit);
+
     const increase = createIncreaseClient();
-    const exportsResp = await increase.listExports({
-      limit,
-      cursor,
-      ...(status ? { 'status.in': [status] } : {}),
-      ...(category ? { 'category.in': [category] } : {}),
-    });
-    res.json(exportsResp);
+
+    const exportsList = [];
+    for (const row of mapped) {
+      const exportId = String(row?.export_id || '').trim();
+      if (!exportId) continue;
+
+      try {
+        const ex = await increase.retrieveExport({ exportId });
+        if (ex) exportsList.push(ex);
+      } catch {
+        // ignore
+      }
+    }
+
+    res.json({ data: exportsList, next_cursor: null });
   } catch (err) {
     res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
   }
@@ -1001,67 +1139,58 @@ app.post('/api/exports', requireAuthApi, async (req, res) => {
   }
 
   const category = String(req.body?.category || '').trim();
-  const accountId = String(req.body?.account_id || '').trim();
-  const statusIn = Array.isArray(req.body?.status_in)
-    ? req.body.status_in.map((s) => String(s).trim()).filter(Boolean)
-    : [];
 
   if (!category) {
     res.status(400).json({ error: 'category is required' });
     return;
   }
 
-  let body;
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
 
-  switch (category) {
-    case 'transaction_csv':
-    case 'balance_csv':
-    case 'account_statement_ofx':
-    case 'account_statement_bai2':
-      if (!accountId) {
-        res.status(400).json({ error: 'account_id is required for this export category' });
-        return;
-      }
+  // Only allow user-scoped export types (anything else could leak other users' data).
+  const allowed = new Set([
+    'transaction_csv',
+    'balance_csv',
+    'account_statement_ofx',
+    'account_statement_bai2',
+  ]);
 
-      body = {
-        category,
-        [category]: {
-          account_id: accountId,
-        },
-      };
-      break;
-
-    case 'vendor_csv':
-      body = { category, vendor_csv: {} };
-      break;
-
-    case 'entity_csv':
-      if (!statusIn.length) {
-        res.status(400).json({ error: 'status_in is required for entity_csv (e.g. ["active"])' });
-        return;
-      }
-
-      body = {
-        category,
-        entity_csv: {
-          status: {
-            in: statusIn,
-          },
-        },
-      };
-      break;
-
-    default:
-      res.status(400).json({
-        error:
-          'Unsupported export category. Try transaction_csv, balance_csv, account_statement_ofx, account_statement_bai2, entity_csv, or vendor_csv.',
-      });
-      return;
+  if (!allowed.has(category)) {
+    res.status(400).json({ error: 'unsupported_export_category' });
+    return;
   }
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
+  const body = {
+    category,
+    [category]: {
+      account_id: accountId,
+    },
+  };
 
   try {
     const increase = createIncreaseClient();
-    const created = await increase.createExport(body);
+    const created = await increase.createExport({
+      body,
+      idempotencyKey: `user-${req.user.id}-export-${category}-${Date.now()}`,
+    });
+
+    try {
+      if (created?.id) {
+        await addUserExport({
+          userId: req.user.id,
+          exportId: String(created.id),
+          category: String(created.category || category),
+        });
+      }
+    } catch {
+      // ignore
+    }
 
     createAuditEvent({
       userId: req.user.id,
@@ -1076,27 +1205,9 @@ app.post('/api/exports', requireAuthApi, async (req, res) => {
 });
 
 app.get('/api/files', requireAuthApi, async (req, res) => {
-  if (!env('INCREASE_API_KEY')) {
-    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
-    return;
-  }
-
-  const cursor = String(req.query?.cursor || '').trim() || null;
-  const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
-  const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
-  const purpose = String(req.query?.purpose || '').trim() || null;
-
-  try {
-    const increase = createIncreaseClient();
-    const files = await increase.listFiles({
-      limit,
-      cursor,
-      ...(purpose ? { 'purpose.in': [purpose] } : {}),
-    });
-    res.json(files);
-  } catch (err) {
-    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
-  }
+  // NOTE: Increase Files cannot be safely listed per-user with our current data model.
+  // Disable this endpoint to prevent leaking other users' documents.
+  res.status(403).json({ error: 'disabled_for_safety' });
 });
 
 app.post('/api/files', requireAuthApi, upload.single('file'), async (req, res) => {
@@ -1146,38 +1257,8 @@ app.post('/api/files', requireAuthApi, upload.single('file'), async (req, res) =
 });
 
 app.post('/api/accounts', requireAuthApi, async (req, res) => {
-  if (!env('INCREASE_API_KEY')) {
-    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
-    return;
-  }
-
-  const name = String(req.body?.name || '').trim();
-  if (!name) {
-    res.status(400).json({ error: 'name is required' });
-    return;
-  }
-
-  const entityId = env('INCREASE_ENTITY_ID');
-  const programId = env('INCREASE_PROGRAM_ID');
-  if (!entityId || !programId) {
-    res.status(400).json({ error: 'INCREASE_ENTITY_ID and INCREASE_PROGRAM_ID must be set to create accounts' });
-    return;
-  }
-
-  try {
-    const increase = createIncreaseClient();
-    const created = await increase.createAccount({ name, entityId, programId });
-
-    createAuditEvent({
-      userId: req.user.id,
-      type: 'increase.account.created',
-      payload: { id: created?.id, name },
-    });
-
-    res.status(201).json(created);
-  } catch (err) {
-    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
-  }
+  // Use the onboarding provision flow to create the user's single account + account number + lockbox.
+  res.status(400).json({ error: 'use_onboarding_provision' });
 });
 
 app.post('/api/cards', requireAuthApi, async (req, res) => {
@@ -1620,6 +1701,18 @@ app.post('/api/external-accounts', requireAuthApi, async (req, res) => {
       funding: funding || undefined,
     });
 
+    try {
+      if (created?.id) {
+        await addUserExternalAccount({
+          userId: req.user.id,
+          externalAccountId: String(created.id),
+          description,
+        });
+      }
+    } catch {
+      // Ignore mapping failures (e.g., duplicate insert) so the core call succeeds.
+    }
+
     createAuditEvent({
       userId: req.user.id,
       type: 'increase.external_account.created',
@@ -1638,12 +1731,14 @@ app.post('/api/lockboxes', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.body?.account_id || '').trim();
   const description = String(req.body?.description || '').trim();
   const recipientName = String(req.body?.recipient_name || '').trim();
 
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
   if (!accountId) {
-    res.status(400).json({ error: 'account_id is required' });
+    res.status(400).json({ error: 'account_not_provisioned' });
     return;
   }
 
@@ -1653,7 +1748,22 @@ app.post('/api/lockboxes', requireAuthApi, async (req, res) => {
       accountId,
       description: description || undefined,
       recipientName: recipientName || undefined,
+      idempotencyKey: `user-${req.user.id}-lockbox-${Date.now()}`,
     });
+
+    // If the user doesn't have a default lockbox yet, store this one.
+    try {
+      if (!userIncrease?.lockbox_id && created?.id) {
+        await upsertUserIncrease({
+          userId: req.user.id,
+          accountId,
+          accountNumberId: userIncrease?.account_number_id ? String(userIncrease.account_number_id) : null,
+          lockboxId: String(created.id),
+        });
+      }
+    } catch {
+      // ignore
+    }
 
     createAuditEvent({
       userId: req.user.id,
@@ -1673,15 +1783,22 @@ app.post('/api/transfers', requireAuthApi, async (req, res) => {
     return;
   }
 
-  const accountId = String(req.body?.account_id || '').trim();
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
   const routingNumber = String(req.body?.routing_number || '').trim();
   const accountNumber = String(req.body?.account_number || '').trim();
   const statementDescriptor = String(req.body?.statement_descriptor || 'Dodo Checks').trim();
   const direction = String(req.body?.direction || 'credit').trim().toLowerCase();
   const amountCentsRaw = Number(req.body?.amount_cents);
 
-  if (!accountId || !routingNumber || !accountNumber) {
-    res.status(400).json({ error: 'account_id, routing_number, and account_number are required' });
+  if (!routingNumber || !accountNumber) {
+    res.status(400).json({ error: 'routing_number and account_number are required' });
     return;
   }
 
@@ -1700,6 +1817,7 @@ app.post('/api/transfers', requireAuthApi, async (req, res) => {
       accountNumber,
       amountCents,
       statementDescriptor,
+      idempotencyKey: `user-${req.user.id}-ach-${Date.now()}`,
     });
 
     createAuditEvent({
@@ -1709,6 +1827,392 @@ app.post('/api/transfers', requireAuthApi, async (req, res) => {
     });
 
     res.status(201).json(created);
+  } catch (err) {
+    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+  }
+});
+
+app.post('/api/wire-transfers', requireAuthApi, async (req, res) => {
+  if (!env('INCREASE_API_KEY')) {
+    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
+  const routingNumber = String(req.body?.routing_number || '').trim();
+  const accountNumber = String(req.body?.account_number || '').trim();
+  const creditorName = String(req.body?.creditor_name || '').trim();
+  const remittanceMessage = String(req.body?.remittance_message || '').trim();
+  const amountCentsRaw = Number(req.body?.amount_cents);
+
+  if (!routingNumber || !accountNumber || !creditorName) {
+    res.status(400).json({ error: 'routing_number, account_number, and creditor_name are required' });
+    return;
+  }
+
+  if (!Number.isInteger(amountCentsRaw) || amountCentsRaw <= 0) {
+    res.status(400).json({ error: 'amount_cents must be an integer greater than 0' });
+    return;
+  }
+
+  try {
+    const increase = createIncreaseClient();
+    const created = await increase.createWireTransfer({
+      accountId,
+      amountCents: amountCentsRaw,
+      routingNumber,
+      accountNumber,
+      creditorName,
+      remittanceMessage: remittanceMessage || '.',
+      idempotencyKey: `user-${req.user.id}-wire-${Date.now()}`,
+    });
+
+    createAuditEvent({
+      userId: req.user.id,
+      type: 'increase.wire_transfer.created',
+      payload: { id: created?.id, accountId, amount_cents: amountCentsRaw },
+    });
+
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+  }
+});
+
+app.post('/api/check-transfers', requireAuthApi, async (req, res) => {
+  if (!env('INCREASE_API_KEY')) {
+    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+  const sourceAccountNumberId = userIncrease?.account_number_id
+    ? String(userIncrease.account_number_id).trim()
+    : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
+  if (!sourceAccountNumberId) {
+    res.status(400).json({ error: 'account_number_not_provisioned' });
+    return;
+  }
+
+  const recipientName = String(req.body?.recipient_name || '').trim();
+  const memo = String(req.body?.memo || '').trim();
+  const amountCentsRaw = Number(req.body?.amount_cents);
+
+  const line1 = String(req.body?.mailing_line1 || '').trim();
+  const line2 = String(req.body?.mailing_line2 || '').trim();
+  const city = String(req.body?.mailing_city || '').trim();
+  const state = String(req.body?.mailing_state || '').trim();
+  const postalCode = String(req.body?.mailing_postal_code || '').trim();
+
+  if (!recipientName || !line1 || !city || !state || !postalCode) {
+    res.status(400).json({ error: 'recipient_name and complete mailing address are required' });
+    return;
+  }
+
+  if (!Number.isInteger(amountCentsRaw) || amountCentsRaw <= 0) {
+    res.status(400).json({ error: 'amount_cents must be an integer greater than 0' });
+    return;
+  }
+
+  try {
+    const increase = createIncreaseClient();
+    const created = await increase.createCheckTransfer({
+      accountId,
+      sourceAccountNumberId,
+      amountCents: amountCentsRaw,
+      recipientName,
+      memo: memo || undefined,
+      mailingAddress: {
+        line1,
+        ...(line2 ? { line2 } : {}),
+        city,
+        state,
+        postal_code: postalCode,
+      },
+      idempotencyKey: `user-${req.user.id}-check-${Date.now()}`,
+    });
+
+    createAuditEvent({
+      userId: req.user.id,
+      type: 'increase.check_transfer.created',
+      payload: { id: created?.id, accountId, amount_cents: amountCentsRaw },
+    });
+
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+  }
+});
+
+app.get('/api/compliance', requireAuthApi, async (req, res) => {
+  const compliance = await getUserCompliance(req.user.id);
+  const docs = await listUserComplianceDocuments(req.user.id, 50);
+  const increaseIds = await getUserIncrease(req.user.id);
+
+  // Never return SSN ciphertext over the API.
+  const safeCompliance = compliance
+    ? {
+        user_id: compliance.user_id,
+        full_name: compliance.full_name,
+        email: compliance.email,
+        phone: compliance.phone,
+        date_of_birth: compliance.date_of_birth,
+        ssn_last4: compliance.ssn_last4,
+        address_line1: compliance.address_line1,
+        address_line2: compliance.address_line2,
+        city: compliance.city,
+        state: compliance.state,
+        zip: compliance.zip,
+        status: compliance.status,
+        created_at: compliance.created_at,
+        updated_at: compliance.updated_at,
+      }
+    : null;
+
+  res.json({ compliance: safeCompliance, documents: docs, increase: increaseIds });
+});
+
+app.post('/api/compliance', requireAuthApi, async (req, res) => {
+  const existing = await getUserCompliance(req.user.id);
+
+  const fullName = String(req.body?.full_name || '').trim();
+  const phone = String(req.body?.phone || '').trim();
+  const dateOfBirth = String(req.body?.date_of_birth || '').trim();
+
+  const addressLine1 = String(req.body?.address_line1 || '').trim();
+  const addressLine2 = String(req.body?.address_line2 || '').trim();
+  const city = String(req.body?.city || '').trim();
+  const state = String(req.body?.state || '').trim();
+  const zip = String(req.body?.zip || '').trim();
+
+  const ssnRaw = String(req.body?.ssn || '').trim();
+
+  // Allow updating other fields without re-entering SSN.
+  let ssnCiphertext = existing?.ssn_ciphertext ? String(existing.ssn_ciphertext) : null;
+  let ssnLast4Val = existing?.ssn_last4 ? String(existing.ssn_last4) : null;
+
+  if (ssnRaw) {
+    const digits = digitsOnly(ssnRaw);
+    if (digits.length !== 9) {
+      res.status(400).json({ error: 'ssn must be 9 digits' });
+      return;
+    }
+
+    const enc = encryptString(digits);
+    if (!enc) {
+      res.status(400).json({ error: 'APP_DATA_ENCRYPTION_KEY is not set (required to store SSN)' });
+      return;
+    }
+
+    ssnCiphertext = enc;
+    ssnLast4Val = ssnLast4(digits);
+  }
+
+  if (!fullName || !phone || !dateOfBirth || !addressLine1 || !city || !state || !zip) {
+    res.status(400).json({ error: 'missing_required_fields' });
+    return;
+  }
+
+  if (!ssnCiphertext) {
+    res.status(400).json({ error: 'ssn_required' });
+    return;
+  }
+
+  const status = 'submitted';
+
+  await upsertUserCompliance({
+    userId: req.user.id,
+    fullName,
+    email: req.user.email,
+    phone,
+    dateOfBirth,
+    ssnLast4: ssnLast4Val,
+    ssnCiphertext,
+    addressLine1,
+    addressLine2: addressLine2 || null,
+    city,
+    state,
+    zip,
+    status,
+  });
+
+  createAuditEvent({
+    userId: req.user.id,
+    type: 'user.compliance.saved',
+    payload: { status },
+  });
+
+  res.status(200).json({ ok: true, status });
+});
+
+app.post(
+  '/api/compliance/documents',
+  requireAuthApi,
+  upload.single('file'),
+  async (req, res) => {
+    if (!env('INCREASE_API_KEY')) {
+      res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+      return;
+    }
+
+    const kind = String(req.body?.kind || '').trim();
+    const allowed = new Set(['id_card', 'proof_of_address']);
+
+    if (!allowed.has(kind)) {
+      res.status(400).json({ error: 'invalid_document_kind' });
+      return;
+    }
+
+    if (!req.file) {
+      res.status(400).json({ error: 'file is required' });
+      return;
+    }
+
+    try {
+      const increase = createIncreaseClient();
+
+      const purpose = kind === 'id_card' ? 'identity_document' : 'entity_supplemental_document';
+      const created = await increase.createFile({
+        fileBuffer: req.file.buffer,
+        filename: req.file.originalname,
+        mimeType: req.file.mimetype,
+        purpose,
+        description: kind,
+      });
+
+      await addUserComplianceDocument({
+        userId: req.user.id,
+        kind,
+        fileId: String(created?.id || ''),
+        filename: req.file.originalname,
+        mimeType: req.file.mimetype,
+      });
+
+      createAuditEvent({
+        userId: req.user.id,
+        type: 'user.compliance.document_uploaded',
+        payload: { kind, file_id: created?.id },
+      });
+
+      res.status(201).json(created);
+    } catch (err) {
+      res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+    }
+  }
+);
+
+app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
+  if (!env('INCREASE_API_KEY')) {
+    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+    return;
+  }
+
+  const entityId = env('INCREASE_ENTITY_ID');
+  const programId = env('INCREASE_PROGRAM_ID');
+
+  if (!entityId || !programId) {
+    res.status(400).json({ error: 'INCREASE_ENTITY_ID and INCREASE_PROGRAM_ID must be set' });
+    return;
+  }
+
+  const compliance = await getUserCompliance(req.user.id);
+  const docs = await listUserComplianceDocuments(req.user.id, 50);
+
+  const hasId = docs.some((d) => String(d.kind || '') === 'id_card');
+  const hasProof = docs.some((d) => String(d.kind || '') === 'proof_of_address');
+
+  if (!compliance?.full_name || !compliance?.date_of_birth || !compliance?.ssn_ciphertext) {
+    res.status(400).json({ error: 'compliance_incomplete' });
+    return;
+  }
+
+  if (!hasId || !hasProof) {
+    res.status(400).json({ error: 'documents_incomplete', missing: [!hasId ? 'id_card' : null, !hasProof ? 'proof_of_address' : null].filter(Boolean) });
+    return;
+  }
+
+  const existing = await getUserIncrease(req.user.id);
+
+  const increase = createIncreaseClient();
+
+  let accountId = existing?.account_id ? String(existing.account_id).trim() : '';
+  let accountNumberId = existing?.account_number_id ? String(existing.account_number_id).trim() : '';
+  let lockboxId = existing?.lockbox_id ? String(existing.lockbox_id).trim() : '';
+
+  try {
+    if (!accountId) {
+      const createdAccount = await increase.createAccount({
+        name: `DodoChecks - ${String(compliance.full_name).slice(0, 120)}`,
+        entityId,
+        programId,
+        idempotencyKey: `user-${req.user.id}-account`,
+      });
+      accountId = String(createdAccount?.id || '').trim();
+
+      createAuditEvent({
+        userId: req.user.id,
+        type: 'increase.account.created',
+        payload: { id: accountId },
+      });
+    }
+
+    if (accountId && !accountNumberId) {
+      const createdAcctNum = await increase.createAccountNumber({
+        accountId,
+        name: 'Primary',
+      });
+      accountNumberId = String(createdAcctNum?.id || '').trim();
+
+      createAuditEvent({
+        userId: req.user.id,
+        type: 'increase.account_number.created',
+        payload: { id: accountNumberId, accountId },
+      });
+    }
+
+    if (accountId && !lockboxId) {
+      const createdLockbox = await increase.createLockbox({
+        accountId,
+        description: 'Personal lockbox',
+        recipientName: String(compliance.full_name || '').trim() || undefined,
+        idempotencyKey: `user-${req.user.id}-lockbox`,
+      });
+      lockboxId = String(createdLockbox?.id || '').trim();
+
+      createAuditEvent({
+        userId: req.user.id,
+        type: 'increase.lockbox.created',
+        payload: { id: lockboxId, accountId },
+      });
+    }
+
+    await upsertUserIncrease({
+      userId: req.user.id,
+      accountId: accountId || null,
+      accountNumberId: accountNumberId || null,
+      lockboxId: lockboxId || null,
+    });
+
+    res.status(201).json({
+      ok: true,
+      account_id: accountId || null,
+      account_number_id: accountNumberId || null,
+      lockbox_id: lockboxId || null,
+    });
   } catch (err) {
     res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
   }
@@ -1822,16 +2326,12 @@ app.get('/app', requireAuth, (req, res) => {
 
 const APP_PAGES = {
   overview: { title: 'Overview', key: 'overview' },
-  accounts: { title: 'Accounts', key: 'accounts' },
   transactions: { title: 'Transactions', key: 'transactions' },
   transfers: { title: 'Transfers', key: 'transfers' },
-  cards: { title: 'Cards', key: 'cards' },
-  'account-numbers': { title: 'Account Numbers', key: 'account-numbers' },
   'external-accounts': { title: 'External Accounts', key: 'external-accounts' },
   lockboxes: { title: 'Lockboxes', key: 'lockboxes' },
   documents: { title: 'Documents', key: 'documents' },
   compliance: { title: 'Compliance', key: 'compliance' },
-  settings: { title: 'Settings', key: 'settings' },
 };
 
 app.get('/app/cards/:cardId', requireAuth, async (req, res) => {
@@ -3296,6 +3796,13 @@ app.get('/app/:section', requireAuth, async (req, res) => {
   let content = '';
   let actionsHtml = '';
 
+  const userIncrease = await getUserIncrease(req.user.id);
+  const userAccountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+  const userAccountNumberId = userIncrease?.account_number_id
+    ? String(userIncrease.account_number_id).trim()
+    : '';
+  const userLockboxId = userIncrease?.lockbox_id ? String(userIncrease.lockbox_id).trim() : '';
+
   let increaseAccounts = [];
   let balancesById = new Map();
   let totalBalanceCents = null;
@@ -3364,36 +3871,38 @@ app.get('/app/:section', requireAuth, async (req, res) => {
     const increase = createIncreaseClient();
 
     try {
-      if (needsAccounts || needsBalances || needsTransactions || needsTransfers || needsCards || needsAccountNumbers) {
-        const accountsResp = await increase.listAccounts();
-        increaseAccounts = extractDataArray(accountsResp);
+      const needsUserAccount =
+        (needsAccounts ||
+          needsBalances ||
+          needsTransactions ||
+          needsTransfers ||
+          needsCards ||
+          needsAccountNumbers ||
+          needsLockboxes ||
+          needsAccountStatements) &&
+        Boolean(userAccountId);
+
+      if (needsUserAccount) {
+        const account = await increase.retrieveAccount({ accountId: userAccountId }).catch(() => null);
+        increaseAccounts = account ? [account] : [];
       }
 
-      if (needsBalances) {
-        const balances = await Promise.all(
-          increaseAccounts.map(async (a) => {
-            try {
-              const balResp = await increase.getAccountBalance({ accountId: a.id });
-              return { id: a.id, cents: getBalanceCents(balResp) };
-            } catch {
-              return { id: a.id, cents: null };
-            }
-          })
-        );
-
-        let sum = 0;
-        for (const b of balances) {
-          if (typeof b.cents === 'number') sum += b.cents;
-          balancesById.set(b.id, b.cents);
+      if (needsBalances && userAccountId) {
+        try {
+          const balResp = await increase.getAccountBalance({ accountId: userAccountId });
+          const cents = getBalanceCents(balResp);
+          balancesById.set(userAccountId, cents);
+          totalBalanceCents = typeof cents === 'number' ? cents : null;
+        } catch {
+          balancesById.set(userAccountId, null);
+          totalBalanceCents = null;
         }
-        totalBalanceCents = sum;
       }
 
-      if (needsTransactions) {
-        const selectedAccountId = String(req.query?.account_id || '').trim() || null;
+      if (needsTransactions && userAccountId) {
         const q = {
           limit: 50,
-          account_id: selectedAccountId || undefined,
+          account_id: userAccountId,
         };
 
         const [pendingResp, txsResp] = await Promise.all([
@@ -3405,33 +3914,30 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         transactions = extractDataArray(txsResp);
       }
 
-      if (needsTransfers) {
-        const selectedAccountId = String(req.query?.account_id || '').trim() || null;
+      if (needsTransfers && userAccountId) {
         const q = {
           limit: 50,
-          account_id: selectedAccountId || undefined,
+          account_id: userAccountId,
         };
 
         const transfersResp = await increase.listAchTransfers(q);
         achTransfers = extractDataArray(transfersResp);
       }
 
-      if (needsCards) {
-        const selectedAccountId = String(req.query?.account_id || '').trim() || null;
+      if (needsCards && userAccountId) {
         const q = {
           limit: 50,
-          account_id: selectedAccountId || undefined,
+          account_id: userAccountId,
         };
 
         const cardsResp = await increase.listCards(q);
         cards = extractDataArray(cardsResp);
       }
 
-      if (needsAccountNumbers) {
-        const selectedAccountId = String(req.query?.account_id || '').trim() || null;
+      if (needsAccountNumbers && userAccountId) {
         const q = {
           limit: 50,
-          account_id: selectedAccountId || undefined,
+          account_id: userAccountId,
         };
 
         const acctNumsResp = await increase.listAccountNumbers(q);
@@ -3439,61 +3945,62 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       }
 
       if (needsExternalAccounts) {
-        const q = { limit: 50 };
-        const extResp = await increase.listExternalAccounts(q);
-        externalAccounts = extractDataArray(extResp);
+        const mapped = await listUserExternalAccounts(req.user.id, 50);
+        externalAccounts = [];
+
+        for (const row of mapped) {
+          const externalAccountId = String(row?.external_account_id || '').trim();
+          if (!externalAccountId) continue;
+
+          try {
+            const ea = await increase.retrieveExternalAccount({ externalAccountId });
+            if (ea) externalAccounts.push(ea);
+          } catch {
+            // ignore
+          }
+        }
       }
 
-      if (needsLockboxes) {
-        const selectedAccountId = String(req.query?.account_id || '').trim() || null;
+      if (needsLockboxes && userAccountId) {
         const q = {
           limit: 50,
-          account_id: selectedAccountId || undefined,
+          account_id: userAccountId,
         };
 
         const lockboxesResp = await increase.listLockboxes(q);
         lockboxes = extractDataArray(lockboxesResp);
       }
 
-      if (needsEntities) {
-        const selectedStatus = String(req.query?.status || '').trim() || null;
+      if (needsAccountStatements && userAccountId) {
         const q = {
           limit: 50,
-          ...(selectedStatus ? { 'status.in': [selectedStatus] } : {}),
-        };
-
-        const entitiesResp = await increase.listEntities(q);
-        entities = extractDataArray(entitiesResp);
-      }
-
-      if (needsAccountStatements) {
-        const selectedAccountId = String(req.query?.account_id || '').trim() || null;
-        const q = {
-          limit: 50,
-          account_id: selectedAccountId || undefined,
+          account_id: userAccountId,
         };
 
         const statementsResp = await increase.listAccountStatements(q);
         accountStatements = extractDataArray(statementsResp);
       }
 
+      // Files can't be safely listed per-user (tax forms / fee statements).
       if (needsFiles) {
-        const purposes =
-          documentsTab === 'tax-forms' ? ['form_1099_int', 'form_1099_misc'] : ['fee_statement'];
-
-        const q = {
-          limit: 50,
-          'purpose.in': purposes,
-        };
-
-        const filesResp = await increase.listFiles(q);
-        files = extractDataArray(filesResp);
+        files = [];
       }
 
       if (needsExports) {
-        const q = { limit: 50 };
-        const exportsResp = await increase.listExports(q);
-        exportsList = extractDataArray(exportsResp);
+        const mapped = await listUserExports(req.user.id, 50);
+        exportsList = [];
+
+        for (const row of mapped) {
+          const exportId = String(row?.export_id || '').trim();
+          if (!exportId) continue;
+
+          try {
+            const ex = await increase.retrieveExport({ exportId });
+            if (ex) exportsList.push(ex);
+          } catch {
+            // ignore
+          }
+        }
       }
     } catch (err) {
       increaseError = err;
@@ -3510,7 +4017,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
 
   if (section === 'overview') {
-    subtitle = 'Overview of all accounts';
+    subtitle = 'Your balance';
 
     const createButton = canCreateAccount
       ? '<button class="btn-primary" type="button" data-open-modal="create-account">Create Account</button>'
@@ -3544,7 +4051,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       `
       : `<button class="btn" type="button" disabled title="${hasIncrease ? 'No accounts loaded yet' : 'Set INCREASE_API_KEY to enable'}">Move Money</button>`;
 
-    actionsHtml = `${createButton} ${moveMoneyButton}`;
+    actionsHtml = '';
 
     const events = await listRecentEventsForUser(req.user.id, 8);
 
@@ -3555,9 +4062,12 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       statusLine = 'Set INCREASE_API_KEY in your .env to connect Increase.';
     } else if (increaseError) {
       statusLine = 'Unable to load Increase data. Check your API key and try again.';
+    } else if (!userAccountId) {
+      totalDisplay = '—';
+      statusLine = 'Finish compliance to provision your account.';
     } else if (totalBalanceCents != null) {
       totalDisplay = formatUsdFromCents(totalBalanceCents);
-      statusLine = `Connected to Increase (${increaseAccounts.length} account${increaseAccounts.length === 1 ? '' : 's'}).`;
+      statusLine = 'Connected to Increase.';
     }
 
     const increaseErrorHtml = increaseError
@@ -3792,8 +4302,8 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       ${increaseErrorHtml}
       <div class="grid">
         <section class="card">
-          <h2>All accounts</h2>
-          <div class="small">Total balance</div>
+          <h2>Balance</h2>
+          <div class="small">Balance</div>
           <div class="value">${esc(totalDisplay)}</div>
           <p class="small" style="margin: 10px 0 0;">
             ${esc(statusLine)}
@@ -3802,7 +4312,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
         <section class="card">
           <h2>Quick actions</h2>
-          <p class="muted" style="margin: 0;">Create accounts, move money, and deposit checks.</p>
+          <p class="muted" style="margin: 0;">Send and deposit checks, and transfer money.</p>
           <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
             <span class="pill">Deposit a check</span>
             <span class="pill">Positive Pay</span>
@@ -3831,8 +4341,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
           <ul class="events">${renderEvents(events)}</ul>
         </section>
       </div>
-
-      ${modalsHtml}
     `;
   } else if (section === 'accounts') {
     subtitle = 'Your Increase accounts';
@@ -3879,7 +4387,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       `;
     }
   } else if (section === 'transactions') {
-    subtitle = 'Account activity across Increase';
+    subtitle = 'Account activity';
 
     const canMoveMoney = hasIncrease && !increaseError && increaseAccounts.length > 0;
     const moveMoneyButton = canMoveMoney
@@ -3908,7 +4416,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       `
       : `<button class="btn" type="button" disabled title="${hasIncrease ? 'No accounts loaded yet' : 'Set INCREASE_API_KEY to enable'}">Move Money</button>`;
 
-    actionsHtml = `${moveMoneyButton}`;
+    actionsHtml = '';
 
     if (!hasIncrease) {
       content = `
@@ -3928,10 +4436,8 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         </section>
       `;
     } else {
-      const selectedAccountId = String(req.query?.account_id || '').trim() || '';
-      const exportHref = selectedAccountId
-        ? `/api/transactions/export.csv?account_id=${encodeURIComponent(selectedAccountId)}`
-        : '/api/transactions/export.csv';
+      const selectedAccountId = '';
+      const exportHref = '/api/transactions/export.csv';
 
       const accountOptionsWithAllHtml = `
         <option value=""${selectedAccountId ? '' : ' selected'}>All accounts</option>
@@ -4218,7 +4724,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       content = `
         <section class="card">
           <div class="tx-toolbar">
-            ${filterHtml}
             ${exportHtml}
           </div>
 
@@ -4236,151 +4741,254 @@ app.get('/app/:section', requireAuth, async (req, res) => {
             ${emptyState}
           </div>
         </section>
-
-        ${transferModalsHtml}
       `;
     }
   } else if (section === 'transfers') {
-    subtitle = 'Money movement via ACH transfers';
+    const tab = (() => {
+      const raw = String(req.query?.tab || '').trim().toLowerCase();
+      const allowed = new Set(['originated', 'received', 'scheduled']);
+      return allowed.has(raw) ? raw : 'originated';
+    })();
 
-    const canMoveMoney = hasIncrease && !increaseError && increaseAccounts.length > 0;
-    const moveMoneyButton = canMoveMoney
+    subtitle = tab === 'received' ? 'Received' : tab === 'scheduled' ? 'Scheduled' : 'Originated';
+
+    const tabsHtml = `
+      <div class="tabs-row">
+        <div class="tabs" role="tablist" aria-label="Transfers tabs">
+          <a class="tab${tab === 'originated' ? ' active' : ''}" href="/app/transfers?tab=originated" role="tab" aria-selected="${
+            tab === 'originated' ? 'true' : 'false'
+          }">Originated</a>
+          <a class="tab${tab === 'received' ? ' active' : ''}" href="/app/transfers?tab=received" role="tab" aria-selected="${
+            tab === 'received' ? 'true' : 'false'
+          }">Received</a>
+          <a class="tab${tab === 'scheduled' ? ' active' : ''}" href="/app/transfers?tab=scheduled" role="tab" aria-selected="${
+            tab === 'scheduled' ? 'true' : 'false'
+          }">Scheduled</a>
+        </div>
+      </div>
+    `;
+
+    const canCreate = hasIncrease && !increaseError && Boolean(userAccountId);
+
+    actionsHtml = canCreate
       ? `
         <details class="menu">
-          <summary class="btn">Move Money</summary>
-          <div class="menu-panel" role="menu" aria-label="Move money">
-            <button class="menu-item" type="button" role="menuitem" data-open-modal="send-money">
-              <div class="menu-title">Send money</div>
-              <div class="menu-desc">Push funds to an external account.</div>
+          <summary class="btn-primary">New</summary>
+          <div class="menu-panel" role="menu" aria-label="Create transfer">
+            <button class="menu-item" type="button" role="menuitem" data-open-modal="send-ach">
+              <div class="menu-title">Send (ACH)</div>
+              <div class="menu-desc">Push funds to an external bank account.</div>
             </button>
-            <button class="menu-item" type="button" role="menuitem" data-open-modal="debit-money">
-              <div class="menu-title">Debit money</div>
-              <div class="menu-desc">Pull funds from an external account.</div>
+            <button class="menu-item" type="button" role="menuitem" data-open-modal="debit-ach">
+              <div class="menu-title">Add funds (ACH)</div>
+              <div class="menu-desc">Pull funds from an external bank account.</div>
             </button>
-            <button class="menu-item" type="button" role="menuitem" data-open-modal="internal-transfer">
-              <div class="menu-title">Transfer between accounts</div>
-              <div class="menu-desc">Move funds between your Increase accounts.</div>
+            <button class="menu-item" type="button" role="menuitem" data-open-modal="send-wire">
+              <div class="menu-title">Send (Wire)</div>
+              <div class="menu-desc">Send a domestic wire transfer.</div>
+            </button>
+            <button class="menu-item" type="button" role="menuitem" data-open-modal="mail-check">
+              <div class="menu-title">Mail a check</div>
+              <div class="menu-desc">Send a physical check to a recipient.</div>
             </button>
             <button class="menu-item" type="button" role="menuitem" data-open-modal="check-deposit">
               <div class="menu-title">Deposit a check</div>
-              <div class="menu-desc">Upload images of a physical check.</div>
+              <div class="menu-desc">Upload front and back images.</div>
             </button>
           </div>
         </details>
       `
-      : `<button class="btn" type="button" disabled title="${hasIncrease ? 'No accounts loaded yet' : 'Set INCREASE_API_KEY to enable'}">Move Money</button>`;
-
-    actionsHtml = `${moveMoneyButton}`;
+      : `<button class="btn" type="button" disabled title="${
+          hasIncrease ? 'Finish onboarding to enable transfers' : 'Set INCREASE_API_KEY to enable'
+        }">New</button>`;
 
     if (!hasIncrease) {
       content = `
         <section class="card">
+          ${tabsHtml}
           <h2>Transfers</h2>
-          <p class="muted" style="margin: 0;">
-            Set <code>INCREASE_API_KEY</code> in your .env to load transfers.
-          </p>
+          <p class="muted" style="margin: 0;">Set <code>INCREASE_API_KEY</code> in your .env to load transfers.</p>
         </section>
       `;
     } else if (increaseError) {
       content = `
         <section class="card">
+          ${tabsHtml}
           <h2>Transfers</h2>
           <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
           <p class="muted" style="margin: 0;">Check your API key and try again.</p>
         </section>
       `;
-    } else {
-      const selectedAccountId = String(req.query?.account_id || '').trim() || '';
-      const exportHref = selectedAccountId
-        ? `/api/transfers/export.csv?account_id=${encodeURIComponent(selectedAccountId)}`
-        : '/api/transfers/export.csv';
-
-      const accountOptionsWithAllHtml = `
-        <option value=""${selectedAccountId ? '' : ' selected'}>All accounts</option>
-        ${increaseAccounts
-          .map((a) => {
-            const label = String(a.name || a.id || 'Account');
-            const id = String(a.id || '');
-            const selected = id && id === selectedAccountId ? ' selected' : '';
-            return `<option value="${esc(id)}"${selected}>${esc(label)}</option>`;
-          })
-          .join('')}
-      `;
-
-      const filterHtml = `
-        <details class="menu">
-          <summary class="btn">Filter <span class="kbd" aria-hidden="true">F</span></summary>
-          <div class="menu-panel" role="menu" aria-label="Filter transfers">
-            <form class="form tx-filter" method="get" action="/app/transfers">
-              <label class="field">
-                <span>Account</span>
-                <select name="account_id">${accountOptionsWithAllHtml}</select>
-              </label>
-
-              <div class="tx-filter-actions">
-                <a class="btn" href="/app/transfers">Clear</a>
-                <button class="btn-primary" type="submit">Apply</button>
-              </div>
-            </form>
+    } else if (!userAccountId) {
+      content = `
+        <section class="card">
+          ${tabsHtml}
+          <h2>Transfers</h2>
+          <p class="muted" style="margin: 0;">Finish compliance and provision your account to enable transfers.</p>
+          <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+            <a class="btn-primary" href="/app/compliance">Go to Compliance</a>
+            <a class="btn" href="/app/overview">Back to Overview</a>
           </div>
-        </details>
+        </section>
       `;
+    } else {
+      const increase = createIncreaseClient();
 
-      const exportHtml = `<a class="btn" href="${esc(exportHref)}">Export <span class="kbd" aria-hidden="true">E</span></a>`;
+      const [wireResp, checkResp, inboundAchResp, inboundWireResp, depositsResp] = await Promise.all([
+        increase.listWireTransfers({ limit: 50, account_id: userAccountId }).catch(() => null),
+        increase.listCheckTransfers({ limit: 50, account_id: userAccountId }).catch(() => null),
+        increase.listInboundAchTransfers({ limit: 50, account_id: userAccountId }).catch(() => null),
+        increase.listInboundWireTransfers({ limit: 50, account_id: userAccountId }).catch(() => null),
+        increase.listCheckDeposits({ limit: 50, account_id: userAccountId }).catch(() => null),
+      ]);
 
-      const accountNameById = new Map(
-        increaseAccounts.map((a) => [String(a.id || ''), String(a.name || a.id || '')])
-      );
+      const wireTransfers = extractDataArray(wireResp);
+      const checkTransfers = extractDataArray(checkResp);
+      const inboundAchTransfers = extractDataArray(inboundAchResp);
+      const inboundWireTransfers = extractDataArray(inboundWireResp);
+      const checkDeposits = extractDataArray(depositsResp);
 
-      function renderTransferRow(t) {
-        const created = formatShortDateTime(t.created_at || t.created || '');
-        const desc = getTransferDescription(t) || String(t.id || '');
-        const acctId = String(t.account_id || '');
-        const acctName = accountNameById.get(acctId) || acctId || '—';
-        const statusRaw = getTransferStatus(t);
-        const statusLabel = humanizeEnum(statusRaw) || statusRaw || 'Pending';
-        const statusClass = transferStatusClass(statusRaw);
+      function isTerminalStatus(statusRaw) {
+        const s = String(statusRaw || '').trim().toLowerCase();
+        if (!s) return false;
+        return [
+          'complete',
+          'completed',
+          'canceled',
+          'cancelled',
+          'rejected',
+          'returned',
+          'reversed',
+          'failed',
+          'mailed',
+          'posted',
+        ].includes(s);
+      }
 
+      function safeString(v) {
+        return String(v == null ? '' : v).trim();
+      }
+
+      function normalizeBase({ kind, createdAt, description, statusRaw, amountCents }) {
+        return {
+          kind,
+          created_at: createdAt,
+          description,
+          status_raw: statusRaw,
+          amount_cents: amountCents,
+        };
+      }
+
+      function normalizeAch(t) {
+        const createdAt = safeString(t?.created_at || t?.created);
+        const desc = getTransferDescription(t) || safeString(t?.id) || 'ACH transfer';
+        const statusRaw = getTransferStatus(t) || safeString(t?.status);
         const amountCents = getTxAmountCents(t);
+        return normalizeBase({ kind: 'ACH', createdAt, description: desc, statusRaw, amountCents });
+      }
+
+      function normalizeWire(t) {
+        const createdAt = safeString(t?.created_at || t?.created);
+        const creditorName = safeString(t?.creditor?.name);
+        const last4 = safeString(t?.account_number_last4 || t?.account_number_last_4);
+        const desc = [creditorName, last4 ? `•••• ${last4}` : ''].filter(Boolean).join(' · ') || safeString(t?.id) || 'Wire transfer';
+        const statusRaw = safeString(t?.status);
+        const amountCents = getTxAmountCents(t);
+        return normalizeBase({ kind: 'Wire', createdAt, description: desc, statusRaw, amountCents });
+      }
+
+      function normalizeCheck(t) {
+        const createdAt = safeString(t?.created_at || t?.created);
+        const recipient = safeString(t?.physical_check?.recipient_name);
+        const desc = recipient ? `To ${recipient}` : safeString(t?.id) || 'Check transfer';
+        const statusRaw = safeString(t?.status);
+        const amountCents = getTxAmountCents(t);
+        return normalizeBase({ kind: 'Check', createdAt, description: desc, statusRaw, amountCents });
+      }
+
+      function normalizeCheckDeposit(t) {
+        const createdAt = safeString(t?.created_at || t?.created);
+        const desc = safeString(t?.description) || safeString(t?.id) || 'Check deposit';
+        const statusRaw = safeString(t?.status);
+        const amountCents = getTxAmountCents(t);
+        return normalizeBase({ kind: 'Deposit', createdAt, description: desc, statusRaw, amountCents });
+      }
+
+      function normalizeInboundAch(t) {
+        const createdAt = safeString(t?.created_at || t?.created);
+        const statusRaw = safeString(t?.status);
+        const amountCents = getTxAmountCents(t);
+        const desc = safeString(t?.addenda) || safeString(t?.id) || 'Inbound ACH';
+        return normalizeBase({ kind: 'Inbound ACH', createdAt, description: desc, statusRaw, amountCents });
+      }
+
+      function normalizeInboundWire(t) {
+        const createdAt = safeString(t?.created_at || t?.created);
+        const statusRaw = safeString(t?.status);
+        const amountCents = getTxAmountCents(t);
+        const sender = safeString(t?.sender?.name);
+        const desc = sender ? `From ${sender}` : safeString(t?.id) || 'Inbound wire';
+        return normalizeBase({ kind: 'Inbound wire', createdAt, description: desc, statusRaw, amountCents });
+      }
+
+      const originatedAll = ([]
+        .concat(achTransfers.map(normalizeAch))
+        .concat(wireTransfers.map(normalizeWire))
+        .concat(checkTransfers.map(normalizeCheck))
+        .concat(checkDeposits.map(normalizeCheckDeposit)))
+        .filter(Boolean);
+
+      const receivedAll = ([]
+        .concat(inboundAchTransfers.map(normalizeInboundAch))
+        .concat(inboundWireTransfers.map(normalizeInboundWire)))
+        .filter(Boolean);
+
+      const scheduledAll = originatedAll.filter((t) => !isTerminalStatus(t.status_raw));
+
+      const list =
+        tab === 'received' ? receivedAll : tab === 'scheduled' ? scheduledAll : originatedAll;
+
+      list.sort((a, b) => {
+        const at = new Date(a.created_at || 0).getTime();
+        const bt = new Date(b.created_at || 0).getTime();
+        return bt - at;
+      });
+
+      function renderRow(row) {
+        const created = formatShortDateTime(row.created_at || '');
+        const dotClass = `tx-dot ${transferStatusClass(row.status_raw)}`;
+
+        const amountCents = row.amount_cents;
         const amount = amountCents == null ? '—' : formatUsdFromCents(amountCents);
         const neg = typeof amountCents === 'number' && amountCents < 0;
 
-        const dotClass = `tx-dot ${statusClass}`;
+        const statusLabel = humanizeEnum(row.status_raw) || safeString(row.status_raw) || '—';
 
         return `
           <div class="tx-row">
-            <div class="tx-created"><span class="${dotClass}" aria-hidden="true"></span>${esc(created)}</div>
-            <div class="tx-desc">${esc(desc)}</div>
-            <div class="tx-acct">${esc(acctName)}</div>
+            <div class="tx-created"><span class="${dotClass}" aria-hidden="true"></span>${esc(created || '—')}</div>
+            <div class="tx-desc">${esc(row.kind || '—')}</div>
+            <div class="tx-acct">${esc(row.description || '—')}</div>
             <div class="tx-cat"><span class="pill">${esc(statusLabel)}</span></div>
             <div class="tx-amt${neg ? ' neg' : ''}">${esc(amount)}</div>
           </div>
         `;
       }
 
-      const rows = achTransfers.map((t) => renderTransferRow(t)).join('');
+      const rows = list.map((r) => renderRow(r)).join('');
       const emptyState = !rows ? '<div class="tx-empty">No transfers found.</div>' : '';
 
-      const transferModalsHtml = canMoveMoney
+      const modalsHtml = canCreate
         ? `
-          <div class="modal" data-modal="send-money" hidden>
+          <div class="modal" data-modal="send-ach" hidden>
             <div class="modal-backdrop" data-close-modal></div>
-            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Send money">
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Send ACH">
               <div class="modal-head">
-                <h2>Send money (ACH)</h2>
+                <h2>Send (ACH)</h2>
                 <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
               </div>
-
               <form class="form" data-form="ach-transfer">
                 <input type="hidden" name="direction" value="credit" />
-
-                <label class="field">
-                  <span>From account</span>
-                  <select name="account_id" required>
-                    <option value="">Select an account</option>
-                    ${accountOptionsHtml}
-                  </select>
-                </label>
 
                 <label class="field">
                   <span>Routing number</span>
@@ -4412,24 +5020,15 @@ app.get('/app/:section', requireAuth, async (req, res) => {
             </div>
           </div>
 
-          <div class="modal" data-modal="debit-money" hidden>
+          <div class="modal" data-modal="debit-ach" hidden>
             <div class="modal-backdrop" data-close-modal></div>
-            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Debit money">
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Debit ACH">
               <div class="modal-head">
-                <h2>Debit money (ACH)</h2>
+                <h2>Add funds (ACH)</h2>
                 <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
               </div>
-
               <form class="form" data-form="ach-transfer">
                 <input type="hidden" name="direction" value="debit" />
-
-                <label class="field">
-                  <span>To account</span>
-                  <select name="account_id" required>
-                    <option value="">Select an account</option>
-                    ${accountOptionsHtml}
-                  </select>
-                </label>
 
                 <label class="field">
                   <span>Routing number</span>
@@ -4461,29 +5060,27 @@ app.get('/app/:section', requireAuth, async (req, res) => {
             </div>
           </div>
 
-          <div class="modal" data-modal="internal-transfer" hidden>
+          <div class="modal" data-modal="send-wire" hidden>
             <div class="modal-backdrop" data-close-modal></div>
-            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Transfer between accounts">
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Send wire">
               <div class="modal-head">
-                <h2>Transfer between accounts</h2>
+                <h2>Send (Wire)</h2>
                 <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
               </div>
-
-              <form class="form" data-form="internal-transfer">
+              <form class="form" data-form="wire-transfer">
                 <label class="field">
-                  <span>From account</span>
-                  <select name="from_account_id" required>
-                    <option value="">Select an account</option>
-                    ${accountOptionsHtml}
-                  </select>
+                  <span>Beneficiary name</span>
+                  <input name="creditor_name" type="text" placeholder="Recipient" required />
                 </label>
 
                 <label class="field">
-                  <span>To account</span>
-                  <select name="to_account_id" required>
-                    <option value="">Select an account</option>
-                    ${accountOptionsHtml}
-                  </select>
+                  <span>Routing number</span>
+                  <input name="routing_number" type="text" inputmode="numeric" placeholder="026009593" required />
+                </label>
+
+                <label class="field">
+                  <span>Account number</span>
+                  <input name="account_number" type="text" inputmode="numeric" placeholder="000123456789" required />
                 </label>
 
                 <label class="field">
@@ -4492,19 +5089,76 @@ app.get('/app/:section', requireAuth, async (req, res) => {
                 </label>
 
                 <label class="field">
-                  <span>Description (optional)</span>
-                  <input name="description" type="text" placeholder="Internal transfer" />
+                  <span>Message to recipient (optional)</span>
+                  <input name="remittance_message" type="text" placeholder="Invoice 123" />
                 </label>
 
                 <div class="modal-actions">
                   <button class="btn" type="button" data-close-modal>Cancel</button>
-                  <button class="btn-primary" type="submit">Transfer</button>
+                  <button class="btn-primary" type="submit">Send wire</button>
                 </div>
 
                 <div class="modal-error small" data-modal-error hidden></div>
               </form>
+            </div>
+          </div>
 
-              <p class="small" style="margin: 10px 2px 0;">Creates an Increase account transfer instantly.</p>
+          <div class="modal" data-modal="mail-check" hidden>
+            <div class="modal-backdrop" data-close-modal></div>
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Mail check">
+              <div class="modal-head">
+                <h2>Mail a check</h2>
+                <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
+              </div>
+
+              <form class="form" data-form="check-transfer">
+                <label class="field">
+                  <span>Recipient name</span>
+                  <input name="recipient_name" type="text" placeholder="John Doe" required />
+                </label>
+
+                <label class="field">
+                  <span>Amount (USD)</span>
+                  <input name="amount_usd" type="number" step="0.01" min="0.01" placeholder="50.00" required />
+                </label>
+
+                <label class="field">
+                  <span>Memo (optional)</span>
+                  <input name="memo" type="text" placeholder="Rent" />
+                </label>
+
+                <label class="field">
+                  <span>Mailing address line 1</span>
+                  <input name="mailing_line1" type="text" placeholder="123 Main St" required />
+                </label>
+
+                <label class="field">
+                  <span>Mailing address line 2 (optional)</span>
+                  <input name="mailing_line2" type="text" placeholder="Apt 4" />
+                </label>
+
+                <label class="field">
+                  <span>City</span>
+                  <input name="mailing_city" type="text" placeholder="New York" required />
+                </label>
+
+                <label class="field">
+                  <span>State</span>
+                  <input name="mailing_state" type="text" placeholder="NY" required />
+                </label>
+
+                <label class="field">
+                  <span>ZIP</span>
+                  <input name="mailing_postal_code" type="text" placeholder="10001" required />
+                </label>
+
+                <div class="modal-actions">
+                  <button class="btn" type="button" data-close-modal>Cancel</button>
+                  <button class="btn-primary" type="submit">Send check</button>
+                </div>
+
+                <div class="modal-error small" data-modal-error hidden></div>
+              </form>
             </div>
           </div>
 
@@ -4517,14 +5171,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
               </div>
 
               <form class="form" data-form="check-deposit" enctype="multipart/form-data">
-                <label class="field">
-                  <span>Account</span>
-                  <select name="account_id" required>
-                    <option value="">Select an account</option>
-                    ${accountOptionsHtml}
-                  </select>
-                </label>
-
                 <label class="field">
                   <span>Amount (USD)</span>
                   <input name="amount_usd" type="number" step="0.01" min="0.01" placeholder="100.00" required />
@@ -4552,8 +5198,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
                 <div class="modal-error small" data-modal-error hidden></div>
               </form>
-
-              <p class="small" style="margin: 10px 2px 0;">Uploads front and back images to create a real deposit via Increase.</p>
             </div>
           </div>
         `
@@ -4561,16 +5205,13 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
       content = `
         <section class="card">
-          <div class="tx-toolbar">
-            ${filterHtml}
-            ${exportHtml}
-          </div>
+          ${tabsHtml}
 
           <div class="tx-table" role="table" aria-label="Transfers">
             <div class="tx-head" role="row">
               <div role="columnheader">Created</div>
+              <div role="columnheader">Type</div>
               <div role="columnheader">Description</div>
-              <div role="columnheader">Account</div>
               <div role="columnheader">Status</div>
               <div role="columnheader" style="text-align:right;">Amount</div>
             </div>
@@ -4580,7 +5221,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
           </div>
         </section>
 
-        ${transferModalsHtml}
+        ${modalsHtml}
       `;
     }
   } else if (section === 'cards') {
@@ -5111,7 +5752,208 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       `;
     }
   } else if (section === 'compliance') {
-    subtitle = 'Entities and onboarding status';
+    if (true) {
+      subtitle = 'Onboarding';
+      actionsHtml = '';
+
+      const compliance = await getUserCompliance(req.user.id);
+      const docs = await listUserComplianceDocuments(req.user.id, 50);
+
+      const fullNameVal = String(compliance?.full_name || '').trim();
+      const phoneVal = String(compliance?.phone || '').trim();
+      const dobVal = String(compliance?.date_of_birth || '').trim();
+
+      const addr1Val = String(compliance?.address_line1 || '').trim();
+      const addr2Val = String(compliance?.address_line2 || '').trim();
+      const cityVal = String(compliance?.city || '').trim();
+      const stateVal = String(compliance?.state || '').trim();
+      const zipVal = String(compliance?.zip || '').trim();
+
+      const hasSsn = Boolean(String(compliance?.ssn_ciphertext || '').trim());
+      const ssnLast4Val = String(compliance?.ssn_last4 || '').trim();
+      const ssnDisplay = ssnLast4Val ? `•••-••-${ssnLast4Val}` : '';
+
+      const hasId = docs.some((d) => String(d?.kind || '') === 'id_card');
+      const hasProof = docs.some((d) => String(d?.kind || '') === 'proof_of_address');
+
+      const encryptionReady = Boolean(getDataEncryptionKey());
+      const increaseReady =
+        hasIncrease && Boolean(env('INCREASE_ENTITY_ID')) && Boolean(env('INCREASE_PROGRAM_ID'));
+
+      const docsRows = docs
+        .map((d) => {
+          const created = formatShortDateTime(d.created_at || '');
+          const kind = String(d.kind || '').trim() || 'document';
+          const filename = String(d.filename || '').trim();
+          const fileId = String(d.file_id || '').trim();
+          const meta = [fileId, filename].filter(Boolean).join(' · ');
+
+          return `
+            <li class="event">
+              <div>
+                <div class="type">${esc(humanizeEnum(kind) || kind)}</div>
+                <div class="meta">${esc([created, meta].filter(Boolean).join(' · ') || '—')}</div>
+              </div>
+              <span class="pill">ok</span>
+            </li>
+          `;
+        })
+        .join('');
+
+      const docsSummary = `
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
+          <span class="pill">ID card: ${hasId ? 'uploaded' : 'missing'}</span>
+          <span class="pill">Proof of address: ${hasProof ? 'uploaded' : 'missing'}</span>
+        </div>
+      `;
+
+      const provisioningSummary = `
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
+          <span class="pill">Account: ${userAccountId ? esc(userAccountId) : 'not provisioned'}</span>
+          <span class="pill">Account number: ${userAccountNumberId ? esc(userAccountNumberId) : 'not provisioned'}</span>
+          <span class="pill">Lockbox: ${userLockboxId ? esc(userLockboxId) : 'not provisioned'}</span>
+        </div>
+      `;
+
+      const warnings = [
+        !encryptionReady
+          ? '<div class="alert" role="alert"><strong>Setup:</strong> Set <code>APP_DATA_ENCRYPTION_KEY</code> (base64 32 bytes) to store SSNs.</div>'
+          : '',
+        !increaseReady
+          ? '<div class="alert" role="alert"><strong>Setup:</strong> Set <code>INCREASE_API_KEY</code>, <code>INCREASE_ENTITY_ID</code>, and <code>INCREASE_PROGRAM_ID</code> to provision accounts.</div>'
+          : '',
+      ]
+        .filter(Boolean)
+        .join('');
+
+      const ssnHelp = hasSsn
+        ? `Stored (last 4: ${esc(ssnDisplay || '—')}). Leave blank to keep existing.`
+        : 'Required. Stored encrypted.';
+
+      content = `
+        ${warnings}
+        <div class="alert" data-inline-error hidden></div>
+
+        <section class="grid">
+          <section class="card">
+            <h2>Personal details</h2>
+            <p class="muted" style="margin: 0;">This information is required before we can provision your account.</p>
+
+            <form class="form" data-form="compliance-save" style="margin-top: 14px;">
+              <label class="field">
+                <span>Full name</span>
+                <input name="full_name" type="text" value="${esc(fullNameVal)}" required />
+              </label>
+
+              <label class="field">
+                <span>Email</span>
+                <input name="email" type="email" value="${esc(req.user.email || '')}" disabled />
+              </label>
+
+              <label class="field">
+                <span>Phone number</span>
+                <input name="phone" type="tel" value="${esc(phoneVal)}" required />
+              </label>
+
+              <label class="field">
+                <span>Date of birth</span>
+                <input name="date_of_birth" type="date" value="${esc(dobVal)}" required />
+              </label>
+
+              <label class="field">
+                <span>Full SSN</span>
+                <input name="ssn" type="password" inputmode="numeric" placeholder="${esc(
+                  hasSsn ? `Stored (${ssnDisplay || '—'})` : '123-45-6789'
+                )}" ${hasSsn ? '' : 'required'} />
+                <div class="small" style="margin-top: 6px;">${ssnHelp}</div>
+              </label>
+
+              <label class="field">
+                <span>Address line 1</span>
+                <input name="address_line1" type="text" value="${esc(addr1Val)}" required />
+              </label>
+
+              <label class="field">
+                <span>Address line 2 (optional)</span>
+                <input name="address_line2" type="text" value="${esc(addr2Val)}" />
+              </label>
+
+              <div style="display:grid; grid-template-columns: 1fr 120px 140px; gap: 12px;">
+                <label class="field" style="margin: 0;">
+                  <span>City</span>
+                  <input name="city" type="text" value="${esc(cityVal)}" required />
+                </label>
+                <label class="field" style="margin: 0;">
+                  <span>State</span>
+                  <input name="state" type="text" value="${esc(stateVal)}" maxlength="2" required />
+                </label>
+                <label class="field" style="margin: 0;">
+                  <span>ZIP</span>
+                  <input name="zip" type="text" value="${esc(zipVal)}" required />
+                </label>
+              </div>
+
+              <div class="modal-actions" style="margin-top: 14px;">
+                <button class="btn-primary" type="submit">Save</button>
+              </div>
+
+              <div class="modal-error small" data-modal-error hidden></div>
+            </form>
+          </section>
+
+          <section class="card">
+            <h2>Documents</h2>
+            <p class="muted" style="margin: 0;">Upload an ID card and proof of address.</p>
+            ${docsSummary}
+
+            <div style="display:grid; gap: 14px; margin-top: 14px;">
+              <form class="form" data-form="compliance-document" enctype="multipart/form-data">
+                <input type="hidden" name="kind" value="id_card" />
+                <label class="field">
+                  <span>ID card</span>
+                  <input name="file" type="file" ${hasIncrease ? 'required' : 'disabled'} />
+                </label>
+                <div class="modal-actions">
+                  <button class="btn" type="submit" ${hasIncrease ? '' : 'disabled'}>Upload</button>
+                </div>
+                <div class="modal-error small" data-modal-error hidden></div>
+              </form>
+
+              <form class="form" data-form="compliance-document" enctype="multipart/form-data">
+                <input type="hidden" name="kind" value="proof_of_address" />
+                <label class="field">
+                  <span>Proof of address</span>
+                  <input name="file" type="file" ${hasIncrease ? 'required' : 'disabled'} />
+                </label>
+                <div class="modal-actions">
+                  <button class="btn" type="submit" ${hasIncrease ? '' : 'disabled'}>Upload</button>
+                </div>
+                <div class="modal-error small" data-modal-error hidden></div>
+              </form>
+            </div>
+
+            <h3 style="margin-top: 18px;">Uploaded</h3>
+            <ul class="events">${docsRows || '<li class="small">No documents uploaded.</li>'}</ul>
+          </section>
+
+          <section class="card" style="grid-column: 1 / -1;">
+            <h2>Provision account</h2>
+            <p class="muted" style="margin: 0;">Creates your Increase account, account number, and lockbox.</p>
+            ${provisioningSummary}
+
+            <form class="form" data-form="onboarding-provision" style="margin-top: 14px;">
+              <div class="modal-actions">
+                <button class="btn-primary" type="submit" ${
+                  increaseReady ? (userAccountId ? 'disabled' : '') : 'disabled'
+                }>${userAccountId ? 'Provisioned' : 'Provision account'}</button>
+              </div>
+              <div class="modal-error small" data-modal-error hidden></div>
+            </form>
+          </section>
+        </section>
+      `;
+    } else {
+      subtitle = 'Entities and onboarding status';
 
     const canConfirm = hasIncrease && !increaseError && entities.length > 0;
     const confirmBtn = canConfirm
@@ -5370,6 +6212,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         ${confirmModal}
       `;
     }
+    }
   } else if (section === 'documents') {
     const tab = documentsTab || 'statements';
     const tabLabel =
@@ -5437,7 +6280,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         </section>
       `;
     } else if (tab === 'statements') {
-      const selectedAccountId = String(req.query?.account_id || '').trim() || '';
+      const selectedAccountId = '';
 
       const accountOptionsWithAllHtml = `
         <option value=""${selectedAccountId ? '' : ' selected'}>All accounts</option>
@@ -5513,9 +6356,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       content = `
         <section class="card">
           ${tabsHtml}
-          <div class="tx-toolbar">
-            ${filterHtml}
-          </div>
 
           <div class="tx-table" role="table" aria-label="Statements">
             <div class="tx-head" role="row">
@@ -5568,7 +6408,10 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       }
 
       const rows = files.map((f) => renderFileRow(f)).join('');
-      const emptyState = !rows ? `<div class="tx-empty">No ${tab === 'tax-forms' ? 'tax forms' : 'fee statements'} found.</div>` : '';
+      const emptyState =
+        !rows
+          ? '<div class="tx-empty">Tax forms and fee statements are not available yet in this demo. Use Exports instead.</div>'
+          : '';
 
       content = `
         <section class="card">
@@ -5630,7 +6473,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         ? `
           <div class="tx-empty">
             <div style="font-weight: 900;">No Exports</div>
-            <div class="small" style="margin-top: 6px;">You can export transactions, balances, entities and other objects. The downloadable files will appear here.</div>
+            <div class="small" style="margin-top: 6px;">You can export transactions, balances, and statements. The downloadable files will appear here.</div>
           </div>
         `
         : '';
@@ -5652,27 +6495,12 @@ app.get('/app/:section', requireAuth, async (req, res) => {
                   <option value="balance_csv">Balance CSV</option>
                   <option value="account_statement_ofx">Account statement (OFX)</option>
                   <option value="account_statement_bai2">Account statement (BAI2)</option>
-                  <option value="entity_csv">Entities CSV</option>
-                  <option value="vendor_csv">Vendors CSV</option>
                 </select>
               </label>
 
-              <label class="field">
-                <span>Account (required for account-based exports)</span>
-                <select name="account_id">
-                  <option value="">Select an account</option>
-                  ${accountOptionsHtml}
-                </select>
-              </label>
-
-              <label class="field">
-                <span>Entity statuses (entity_csv)</span>
-                <select name="status_in" multiple size="3">
-                  <option value="active" selected>Active</option>
-                  <option value="archived">Archived</option>
-                  <option value="disabled">Disabled</option>
-                </select>
-              </label>
+              <p class="small" style="margin: 6px 2px 0;">
+                Exports are created for your account. If you haven't provisioned an account yet, finish Compliance first.
+              </p>
 
               <div class="modal-actions">
                 <button class="btn" type="button" data-close-modal>Cancel</button>

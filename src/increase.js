@@ -83,7 +83,7 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     console.log(`[increase] baseUrl=${base}`);
   }
 
-  async function request({ method, pathname, query, body }) {
+  async function request({ method, pathname, query, body, headers }) {
     if (!key) {
       throw new Error('INCREASE_API_KEY is not set (required to call Increase API)');
     }
@@ -103,7 +103,8 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
       method,
       headers: {
         Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
+        ...(body == null ? {} : { 'Content-Type': 'application/json' }),
+        ...(headers && typeof headers === 'object' ? headers : {}),
       },
       body: body == null ? undefined : JSON.stringify(body),
     });
@@ -134,7 +135,7 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     return json;
   }
 
-  async function requestMultipart({ method, pathname, query, formData }) {
+  async function requestMultipart({ method, pathname, query, formData, headers }) {
     if (!key) {
       throw new Error('INCREASE_API_KEY is not set (required to call Increase API)');
     }
@@ -160,6 +161,7 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
       method,
       headers: {
         Authorization: `Bearer ${key}`,
+        ...(headers && typeof headers === 'object' ? headers : {}),
       },
       body: formData,
     });
@@ -194,11 +196,13 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     request,
 
     // Accounts
-    listAccounts: () => request({ method: 'GET', pathname: '/accounts' }),
-    createAccount: ({ name, entityId, programId }) =>
+    listAccounts: (query) => request({ method: 'GET', pathname: '/accounts', query }),
+    retrieveAccount: ({ accountId }) => request({ method: 'GET', pathname: `/accounts/${encodeURIComponent(accountId)}` }),
+    createAccount: ({ name, entityId, programId, idempotencyKey }) =>
       request({
         method: 'POST',
         pathname: '/accounts',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
         body: {
           name,
           entity_id: entityId,
@@ -257,10 +261,13 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // External Accounts
     listExternalAccounts: (query) => request({ method: 'GET', pathname: '/external_accounts', query }),
-    createExternalAccount: ({ description, routingNumber, accountNumber, accountHolder, funding }) =>
+    retrieveExternalAccount: ({ externalAccountId }) =>
+      request({ method: 'GET', pathname: `/external_accounts/${encodeURIComponent(externalAccountId)}` }),
+    createExternalAccount: ({ description, routingNumber, accountNumber, accountHolder, funding, idempotencyKey }) =>
       request({
         method: 'POST',
         pathname: '/external_accounts',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
         body: {
           description,
           routing_number: routingNumber,
@@ -272,16 +279,20 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // Lockboxes
     listLockboxes: (query) => request({ method: 'GET', pathname: '/lockboxes', query }),
-    createLockbox: ({ accountId, description, recipientName }) =>
+    createLockbox: ({ accountId, description, recipientName, idempotencyKey }) =>
       request({
         method: 'POST',
         pathname: '/lockboxes',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
         body: {
           account_id: accountId,
           ...(description ? { description } : {}),
           ...(recipientName ? { recipient_name: recipientName } : {}),
         },
       }),
+
+    // Inbound Mail Items
+    listInboundMailItems: (query) => request({ method: 'GET', pathname: '/inbound_mail_items', query }),
 
     // Files
     listFiles: (query) => request({ method: 'GET', pathname: '/files', query }),
@@ -301,10 +312,12 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
       return requestMultipart({ method: 'POST', pathname: '/files', formData: fd });
     },
     // Check Deposits
-    createCheckDeposit: ({ accountId, amountCents, frontFileId, backFileId, description }) =>
+    listCheckDeposits: (query) => request({ method: 'GET', pathname: '/check_deposits', query }),
+    createCheckDeposit: ({ accountId, amountCents, frontFileId, backFileId, description, idempotencyKey }) =>
       request({
         method: 'POST',
         pathname: '/check_deposits',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
         body: {
           account_id: accountId,
           amount: amountCents,
@@ -339,7 +352,13 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     listExports: (query) => request({ method: 'GET', pathname: '/exports', query }),
     retrieveExport: ({ exportId }) =>
       request({ method: 'GET', pathname: `/exports/${encodeURIComponent(exportId)}` }),
-    createExport: (body) => request({ method: 'POST', pathname: '/exports', body }),
+    createExport: ({ body, idempotencyKey }) =>
+      request({
+        method: 'POST',
+        pathname: '/exports',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
+        body: body || {},
+      }),
 
     // Entities
     listEntities: (query) => request({ method: 'GET', pathname: '/entities', query }),
@@ -367,10 +386,12 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
       accountNumber,
       amountCents,
       statementDescriptor,
+      idempotencyKey,
     }) =>
       request({
         method: 'POST',
         pathname: '/ach_transfers',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
         body: {
           account_id: accountId,
           routing_number: routingNumber,
@@ -379,6 +400,69 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
           statement_descriptor: statementDescriptor,
         },
       }),
+
+    // Check transfers (mail checks)
+    listCheckTransfers: (query) => request({ method: 'GET', pathname: '/check_transfers', query }),
+    createCheckTransfer: ({
+      accountId,
+      sourceAccountNumberId,
+      amountCents,
+      recipientName,
+      memo,
+      mailingAddress,
+      idempotencyKey,
+    }) =>
+      request({
+        method: 'POST',
+        pathname: '/check_transfers',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
+        body: {
+          account_id: accountId,
+          amount: amountCents,
+          ...(sourceAccountNumberId ? { source_account_number_id: sourceAccountNumberId } : {}),
+          fulfillment_method: 'physical_check',
+          physical_check: {
+            recipient_name: recipientName,
+            memo,
+            mailing_address: mailingAddress,
+          },
+        },
+      }),
+
+    // Wire transfers
+    listWireTransfers: (query) => request({ method: 'GET', pathname: '/wire_transfers', query }),
+    createWireTransfer: ({
+      accountId,
+      amountCents,
+      routingNumber,
+      accountNumber,
+      creditorName,
+      remittanceMessage,
+      idempotencyKey,
+    }) =>
+      request({
+        method: 'POST',
+        pathname: '/wire_transfers',
+        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
+        body: {
+          account_id: accountId,
+          amount: amountCents,
+          routing_number: routingNumber,
+          account_number: accountNumber,
+          creditor: {
+            name: creditorName,
+          },
+          remittance: {
+            category: 'unstructured',
+            unstructured: {
+              message: remittanceMessage,
+            },
+          },
+        },
+      }),
+
+    // Inbound wire transfers
+    listInboundWireTransfers: (query) => request({ method: 'GET', pathname: '/inbound_wire_transfers', query }),
   };
 }
 

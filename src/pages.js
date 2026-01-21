@@ -67,16 +67,12 @@ function icon(name) {
 
 const NAV_ITEMS = [
   { key: 'overview', label: 'Overview', href: '/app/overview', icon: icon('overview') },
-  { key: 'accounts', label: 'Accounts', href: '/app/accounts', icon: icon('accounts') },
   { key: 'transactions', label: 'Transactions', href: '/app/transactions', icon: icon('transactions') },
   { key: 'transfers', label: 'Transfers', href: '/app/transfers', icon: icon('transfers') },
-  { key: 'cards', label: 'Cards', href: '/app/cards', icon: icon('cards') },
-  { key: 'account-numbers', label: 'Account Numbers', href: '/app/account-numbers', icon: icon('account_numbers') },
   { key: 'external-accounts', label: 'External Accounts', href: '/app/external-accounts', icon: icon('external_accounts') },
   { key: 'lockboxes', label: 'Lockboxes', href: '/app/lockboxes', icon: icon('lockboxes') },
   { key: 'documents', label: 'Documents', href: '/app/documents', icon: icon('documents') },
   { key: 'compliance', label: 'Compliance', href: '/app/compliance', icon: icon('compliance') },
-  { key: 'settings', label: 'Settings', href: '/app/settings', icon: icon('settings') },
 ];
 
 function renderAuthPage({ mode, error, next = '', email = '' }) {

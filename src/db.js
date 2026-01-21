@@ -55,11 +55,90 @@ function initSqliteSchema(database) {
       type TEXT NOT NULL,
       payload_json TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id)
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS audit_events_user_id_created_at_idx
       ON audit_events(user_id, created_at DESC);
+
+    -- Per-user compliance profile (CIP / KYC data).
+    -- Note: avoid storing raw SSNs; store encrypted values + last4.
+    CREATE TABLE IF NOT EXISTS user_compliance (
+      user_id INTEGER PRIMARY KEY,
+      full_name TEXT,
+      email TEXT,
+      phone TEXT,
+      date_of_birth TEXT,
+      ssn_last4 TEXT,
+      ssn_ciphertext TEXT,
+      address_line1 TEXT,
+      address_line2 TEXT,
+      city TEXT,
+      state TEXT,
+      zip TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- Per-user Increase object mapping (single-account product).
+    CREATE TABLE IF NOT EXISTS user_increase (
+      user_id INTEGER PRIMARY KEY,
+      account_id TEXT,
+      account_number_id TEXT,
+      lockbox_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- External accounts are global in Increase; we must map them to a user.
+    CREATE TABLE IF NOT EXISTS user_external_accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      external_account_id TEXT NOT NULL,
+      description TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS user_external_accounts_external_account_id_unique
+      ON user_external_accounts(external_account_id);
+
+    CREATE INDEX IF NOT EXISTS user_external_accounts_user_id_created_at_idx
+      ON user_external_accounts(user_id, created_at DESC);
+
+    -- Compliance documents uploaded by the user (stored in Increase Files).
+    CREATE TABLE IF NOT EXISTS user_compliance_documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      file_id TEXT NOT NULL,
+      filename TEXT,
+      mime_type TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS user_compliance_documents_user_id_created_at_idx
+      ON user_compliance_documents(user_id, created_at DESC);
+
+    -- Exports created by the user (stored in Increase Exports).
+    CREATE TABLE IF NOT EXISTS user_exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      export_id TEXT NOT NULL,
+      category TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS user_exports_export_id_unique
+      ON user_exports(export_id);
+
+    CREATE INDEX IF NOT EXISTS user_exports_user_id_created_at_idx
+      ON user_exports(user_id, created_at DESC);
   `);
 }
 
@@ -75,6 +154,79 @@ function prepareSqliteStatements(database) {
     ),
     listRecentEventsForUser: database.prepare(
       'SELECT id, type, payload_json, created_at FROM audit_events WHERE user_id = ? ORDER BY id DESC LIMIT ?'
+    ),
+
+    // Compliance
+    upsertUserCompliance: database.prepare(`
+      INSERT INTO user_compliance (
+        user_id, full_name, email, phone, date_of_birth,
+        ssn_last4, ssn_ciphertext,
+        address_line1, address_line2, city, state, zip,
+        status, updated_at
+      ) VALUES (
+        ?, ?, ?, ?, ?,
+        ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, datetime('now')
+      )
+      ON CONFLICT(user_id) DO UPDATE SET
+        full_name = excluded.full_name,
+        email = excluded.email,
+        phone = excluded.phone,
+        date_of_birth = excluded.date_of_birth,
+        ssn_last4 = excluded.ssn_last4,
+        ssn_ciphertext = excluded.ssn_ciphertext,
+        address_line1 = excluded.address_line1,
+        address_line2 = excluded.address_line2,
+        city = excluded.city,
+        state = excluded.state,
+        zip = excluded.zip,
+        status = excluded.status,
+        updated_at = datetime('now')
+    `),
+    getUserCompliance: database.prepare(
+      `SELECT user_id, full_name, email, phone, date_of_birth, ssn_last4, ssn_ciphertext,
+              address_line1, address_line2, city, state, zip, status, created_at, updated_at
+       FROM user_compliance WHERE user_id = ?`
+    ),
+
+    // Increase mapping
+    upsertUserIncrease: database.prepare(`
+      INSERT INTO user_increase (
+        user_id, account_id, account_number_id, lockbox_id, updated_at
+      ) VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(user_id) DO UPDATE SET
+        account_id = excluded.account_id,
+        account_number_id = excluded.account_number_id,
+        lockbox_id = excluded.lockbox_id,
+        updated_at = datetime('now')
+    `),
+    getUserIncrease: database.prepare(
+      'SELECT user_id, account_id, account_number_id, lockbox_id, created_at, updated_at FROM user_increase WHERE user_id = ?'
+    ),
+
+    // External accounts (Increase)
+    insertUserExternalAccount: database.prepare(
+      'INSERT INTO user_external_accounts (user_id, external_account_id, description) VALUES (?, ?, ?)'
+    ),
+    listUserExternalAccounts: database.prepare(
+      'SELECT id, user_id, external_account_id, description, created_at FROM user_external_accounts WHERE user_id = ? ORDER BY id DESC LIMIT ?'
+    ),
+
+    // Compliance docs (Increase Files)
+    insertUserComplianceDocument: database.prepare(
+      'INSERT INTO user_compliance_documents (user_id, kind, file_id, filename, mime_type) VALUES (?, ?, ?, ?, ?)'
+    ),
+    listUserComplianceDocuments: database.prepare(
+      'SELECT id, user_id, kind, file_id, filename, mime_type, created_at FROM user_compliance_documents WHERE user_id = ? ORDER BY id DESC LIMIT ?'
+    ),
+
+    // User exports (Increase Exports)
+    insertUserExport: database.prepare(
+      'INSERT INTO user_exports (user_id, export_id, category) VALUES (?, ?, ?)'
+    ),
+    listUserExports: database.prepare(
+      'SELECT id, user_id, export_id, category, created_at FROM user_exports WHERE user_id = ? ORDER BY id DESC LIMIT ?'
     ),
   };
 }
@@ -167,6 +319,94 @@ async function initMysqlSchema(pool) {
       PRIMARY KEY (id),
       KEY audit_events_user_id_created_at_idx (user_id, created_at),
       CONSTRAINT audit_events_user_fk FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS user_compliance (
+      user_id BIGINT UNSIGNED NOT NULL,
+      full_name VARCHAR(255) NULL,
+      email VARCHAR(255) NULL,
+      phone VARCHAR(64) NULL,
+      date_of_birth VARCHAR(16) NULL,
+      ssn_last4 VARCHAR(4) NULL,
+      ssn_ciphertext TEXT NULL,
+      address_line1 VARCHAR(255) NULL,
+      address_line2 VARCHAR(255) NULL,
+      city VARCHAR(128) NULL,
+      state VARCHAR(64) NULL,
+      zip VARCHAR(32) NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'draft',
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id),
+      CONSTRAINT user_compliance_user_fk FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS user_increase (
+      user_id BIGINT UNSIGNED NOT NULL,
+      account_id VARCHAR(128) NULL,
+      account_number_id VARCHAR(128) NULL,
+      lockbox_id VARCHAR(128) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id),
+      CONSTRAINT user_increase_user_fk FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS user_external_accounts (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id BIGINT UNSIGNED NOT NULL,
+      external_account_id VARCHAR(128) NOT NULL,
+      description VARCHAR(255) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY user_external_accounts_external_account_id_unique (external_account_id),
+      KEY user_external_accounts_user_id_created_at_idx (user_id, created_at),
+      CONSTRAINT user_external_accounts_user_fk FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS user_compliance_documents (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id BIGINT UNSIGNED NOT NULL,
+      kind VARCHAR(64) NOT NULL,
+      file_id VARCHAR(128) NOT NULL,
+      filename VARCHAR(255) NULL,
+      mime_type VARCHAR(128) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY user_compliance_documents_user_id_created_at_idx (user_id, created_at),
+      CONSTRAINT user_compliance_documents_user_fk FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS user_exports (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id BIGINT UNSIGNED NOT NULL,
+      export_id VARCHAR(128) NOT NULL,
+      category VARCHAR(128) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY user_exports_export_id_unique (export_id),
+      KEY user_exports_user_id_created_at_idx (user_id, created_at),
+      CONSTRAINT user_exports_user_fk FOREIGN KEY (user_id)
         REFERENCES users(id)
         ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -284,6 +524,238 @@ async function createAuditEvent({ userId, type, payload }) {
   }
 }
 
+async function upsertUserCompliance({
+  userId,
+  fullName,
+  email,
+  phone,
+  dateOfBirth,
+  ssnLast4,
+  ssnCiphertext,
+  addressLine1,
+  addressLine2,
+  city,
+  state,
+  zip,
+  status,
+}) {
+  const safeStatus = String(status || 'draft').trim() || 'draft';
+
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    await pool.execute(
+      `INSERT INTO user_compliance (
+        user_id, full_name, email, phone, date_of_birth,
+        ssn_last4, ssn_ciphertext,
+        address_line1, address_line2, city, state, zip,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        full_name = VALUES(full_name),
+        email = VALUES(email),
+        phone = VALUES(phone),
+        date_of_birth = VALUES(date_of_birth),
+        ssn_last4 = VALUES(ssn_last4),
+        ssn_ciphertext = VALUES(ssn_ciphertext),
+        address_line1 = VALUES(address_line1),
+        address_line2 = VALUES(address_line2),
+        city = VALUES(city),
+        state = VALUES(state),
+        zip = VALUES(zip),
+        status = VALUES(status)`,
+      [
+        userId,
+        fullName || null,
+        email || null,
+        phone || null,
+        dateOfBirth || null,
+        ssnLast4 || null,
+        ssnCiphertext || null,
+        addressLine1 || null,
+        addressLine2 || null,
+        city || null,
+        state || null,
+        zip || null,
+        safeStatus,
+      ]
+    );
+    return;
+  }
+
+  getSqliteDb();
+  sqliteStmts.upsertUserCompliance.run(
+    userId,
+    fullName || null,
+    email || null,
+    phone || null,
+    dateOfBirth || null,
+    ssnLast4 || null,
+    ssnCiphertext || null,
+    addressLine1 || null,
+    addressLine2 || null,
+    city || null,
+    state || null,
+    zip || null,
+    safeStatus
+  );
+}
+
+async function getUserCompliance(userId) {
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    const [rows] = await pool.execute(
+      `SELECT user_id, full_name, email, phone, date_of_birth, ssn_last4, ssn_ciphertext,
+              address_line1, address_line2, city, state, zip, status, created_at, updated_at
+       FROM user_compliance WHERE user_id = ? LIMIT 1`,
+      [userId]
+    );
+    return rows && rows[0] ? rows[0] : null;
+  }
+
+  getSqliteDb();
+  return sqliteStmts.getUserCompliance.get(userId) || null;
+}
+
+async function upsertUserIncrease({ userId, accountId, accountNumberId, lockboxId }) {
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    await pool.execute(
+      `INSERT INTO user_increase (user_id, account_id, account_number_id, lockbox_id)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         account_id = VALUES(account_id),
+         account_number_id = VALUES(account_number_id),
+         lockbox_id = VALUES(lockbox_id)`,
+      [userId, accountId || null, accountNumberId || null, lockboxId || null]
+    );
+    return;
+  }
+
+  getSqliteDb();
+  sqliteStmts.upsertUserIncrease.run(userId, accountId || null, accountNumberId || null, lockboxId || null);
+}
+
+async function getUserIncrease(userId) {
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    const [rows] = await pool.execute(
+      'SELECT user_id, account_id, account_number_id, lockbox_id, created_at, updated_at FROM user_increase WHERE user_id = ? LIMIT 1',
+      [userId]
+    );
+    return rows && rows[0] ? rows[0] : null;
+  }
+
+  getSqliteDb();
+  return sqliteStmts.getUserIncrease.get(userId) || null;
+}
+
+async function addUserExternalAccount({ userId, externalAccountId, description }) {
+  if (!externalAccountId) throw new Error('externalAccountId is required');
+
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    await pool.execute(
+      'INSERT INTO user_external_accounts (user_id, external_account_id, description) VALUES (?, ?, ?)',
+      [userId, externalAccountId, description || null]
+    );
+    return;
+  }
+
+  getSqliteDb();
+  sqliteStmts.insertUserExternalAccount.run(userId, externalAccountId, description || null);
+}
+
+async function listUserExternalAccounts(userId, limit = 50) {
+  const lim = Number.isInteger(Number(limit)) ? Number(limit) : 50;
+  const safeLimit = Math.max(1, Math.min(200, lim));
+
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    const [rows] = await pool.execute(
+      `SELECT id, user_id, external_account_id, description, created_at
+       FROM user_external_accounts WHERE user_id = ?
+       ORDER BY id DESC LIMIT ${safeLimit}`,
+      [userId]
+    );
+    return rows || [];
+  }
+
+  getSqliteDb();
+  return sqliteStmts.listUserExternalAccounts.all(userId, safeLimit);
+}
+
+async function addUserComplianceDocument({ userId, kind, fileId, filename, mimeType }) {
+  if (!fileId) throw new Error('fileId is required');
+  const k = String(kind || '').trim();
+  if (!k) throw new Error('kind is required');
+
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    await pool.execute(
+      'INSERT INTO user_compliance_documents (user_id, kind, file_id, filename, mime_type) VALUES (?, ?, ?, ?, ?)',
+      [userId, k, fileId, filename || null, mimeType || null]
+    );
+    return;
+  }
+
+  getSqliteDb();
+  sqliteStmts.insertUserComplianceDocument.run(userId, k, fileId, filename || null, mimeType || null);
+}
+
+async function listUserComplianceDocuments(userId, limit = 50) {
+  const lim = Number.isInteger(Number(limit)) ? Number(limit) : 50;
+  const safeLimit = Math.max(1, Math.min(200, lim));
+
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    const [rows] = await pool.execute(
+      `SELECT id, user_id, kind, file_id, filename, mime_type, created_at
+       FROM user_compliance_documents WHERE user_id = ?
+       ORDER BY id DESC LIMIT ${safeLimit}`,
+      [userId]
+    );
+    return rows || [];
+  }
+
+  getSqliteDb();
+  return sqliteStmts.listUserComplianceDocuments.all(userId, safeLimit);
+}
+
+async function addUserExport({ userId, exportId, category }) {
+  if (!exportId) throw new Error('exportId is required');
+
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    await pool.execute(
+      'INSERT INTO user_exports (user_id, export_id, category) VALUES (?, ?, ?)',
+      [userId, exportId, category || null]
+    );
+    return;
+  }
+
+  getSqliteDb();
+  sqliteStmts.insertUserExport.run(userId, exportId, category || null);
+}
+
+async function listUserExports(userId, limit = 50) {
+  const lim = Number.isInteger(Number(limit)) ? Number(limit) : 50;
+  const safeLimit = Math.max(1, Math.min(200, lim));
+
+  if (shouldUseMysql()) {
+    const pool = await getMysqlPool();
+    const [rows] = await pool.execute(
+      `SELECT id, user_id, export_id, category, created_at
+       FROM user_exports WHERE user_id = ?
+       ORDER BY id DESC LIMIT ${safeLimit}`,
+      [userId]
+    );
+    return rows || [];
+  }
+
+  getSqliteDb();
+  return sqliteStmts.listUserExports.all(userId, safeLimit);
+}
+
 async function listRecentEventsForUser(userId, limit = 10) {
   const lim = Number.isInteger(Number(limit)) ? Number(limit) : 10;
   const safeLimit = Math.max(1, Math.min(100, lim));
@@ -308,4 +780,18 @@ module.exports = {
   getUserById,
   createAuditEvent,
   listRecentEventsForUser,
+
+  // Compliance
+  upsertUserCompliance,
+  getUserCompliance,
+  addUserComplianceDocument,
+  listUserComplianceDocuments,
+
+  // Increase mapping
+  upsertUserIncrease,
+  getUserIncrease,
+  addUserExternalAccount,
+  listUserExternalAccounts,
+  addUserExport,
+  listUserExports,
 };
