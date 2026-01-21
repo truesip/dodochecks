@@ -474,44 +474,6 @@
     });
   }
 
-  // Create External Account
-  var createExternalForm = qs('form[data-form="create-external-account"]');
-  if (createExternalForm) {
-    createExternalForm.addEventListener('submit', async function (e) {
-      e.preventDefault();
-
-      var modal = createExternalForm.closest('.modal');
-      var submit = qs('button[type="submit"]', createExternalForm);
-
-      var description = String(qs('[name="description"]', createExternalForm).value || '').trim();
-      var routing = String(qs('[name="routing_number"]', createExternalForm).value || '').trim();
-      var acct = String(qs('[name="account_number"]', createExternalForm).value || '').trim();
-      var holder = String(qs('[name="account_holder"]', createExternalForm).value || '').trim();
-      var funding = String(qs('[name="funding"]', createExternalForm).value || '').trim();
-
-      if (!description || !routing || !acct) {
-        setModalError(modal, 'Description, routing number, and account number are required.');
-        return;
-      }
-
-      if (submit) submit.disabled = true;
-
-      try {
-        await postJson('/api/external-accounts', {
-          description: description,
-          routing_number: routing,
-          account_number: acct,
-          account_holder: holder || undefined,
-          funding: funding || undefined,
-        });
-        window.location.reload();
-      } catch (err) {
-        setModalError(modal, err.message || 'Something went wrong.');
-        if (submit) submit.disabled = false;
-      }
-    });
-  }
-
   // Create Lockbox
   var createLockboxForm = qs('form[data-form="create-lockbox"]');
   if (createLockboxForm) {

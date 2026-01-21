@@ -102,22 +102,6 @@ function initSqliteSchema(database) {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
-    -- External accounts are global in Increase; we must map them to a user.
-    CREATE TABLE IF NOT EXISTS user_external_accounts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      external_account_id TEXT NOT NULL,
-      description TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS user_external_accounts_external_account_id_unique
-      ON user_external_accounts(external_account_id);
-
-    CREATE INDEX IF NOT EXISTS user_external_accounts_user_id_created_at_idx
-      ON user_external_accounts(user_id, created_at DESC);
-
     -- Compliance documents uploaded by the user (stored in Increase Files).
     CREATE TABLE IF NOT EXISTS user_compliance_documents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,14 +200,6 @@ function prepareSqliteStatements(database) {
     `),
     getUserIncrease: database.prepare(
       'SELECT user_id, entity_id, account_id, account_number_id, lockbox_id, created_at, updated_at FROM user_increase WHERE user_id = ?'
-    ),
-
-    // External accounts (Increase)
-    insertUserExternalAccount: database.prepare(
-      'INSERT INTO user_external_accounts (user_id, external_account_id, description) VALUES (?, ?, ?)'
-    ),
-    listUserExternalAccounts: database.prepare(
-      'SELECT id, user_id, external_account_id, description, created_at FROM user_external_accounts WHERE user_id = ? ORDER BY id DESC LIMIT ?'
     ),
 
     // Compliance docs (Increase Files)
@@ -386,22 +362,6 @@ async function initMysqlSchema(pool) {
   } catch {
     // Ignore migrations failures so boot doesn't hard-fail; schema issues will surface on writes.
   }
-
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS user_external_accounts (
-      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-      user_id BIGINT UNSIGNED NOT NULL,
-      external_account_id VARCHAR(128) NOT NULL,
-      description VARCHAR(255) NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      UNIQUE KEY user_external_accounts_external_account_id_unique (external_account_id),
-      KEY user_external_accounts_user_id_created_at_idx (user_id, created_at),
-      CONSTRAINT user_external_accounts_user_fk FOREIGN KEY (user_id)
-        REFERENCES users(id)
-        ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `);
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS user_compliance_documents (
@@ -686,41 +646,6 @@ async function getUserIncrease(userId) {
   return sqliteStmts.getUserIncrease.get(userId) || null;
 }
 
-async function addUserExternalAccount({ userId, externalAccountId, description }) {
-  if (!externalAccountId) throw new Error('externalAccountId is required');
-
-  if (shouldUseMysql()) {
-    const pool = await getMysqlPool();
-    await pool.execute(
-      'INSERT INTO user_external_accounts (user_id, external_account_id, description) VALUES (?, ?, ?)',
-      [userId, externalAccountId, description || null]
-    );
-    return;
-  }
-
-  getSqliteDb();
-  sqliteStmts.insertUserExternalAccount.run(userId, externalAccountId, description || null);
-}
-
-async function listUserExternalAccounts(userId, limit = 50) {
-  const lim = Number.isInteger(Number(limit)) ? Number(limit) : 50;
-  const safeLimit = Math.max(1, Math.min(200, lim));
-
-  if (shouldUseMysql()) {
-    const pool = await getMysqlPool();
-    const [rows] = await pool.execute(
-      `SELECT id, user_id, external_account_id, description, created_at
-       FROM user_external_accounts WHERE user_id = ?
-       ORDER BY id DESC LIMIT ${safeLimit}`,
-      [userId]
-    );
-    return rows || [];
-  }
-
-  getSqliteDb();
-  return sqliteStmts.listUserExternalAccounts.all(userId, safeLimit);
-}
-
 async function addUserComplianceDocument({ userId, kind, fileId, filename, mimeType }) {
   if (!fileId) throw new Error('fileId is required');
   const k = String(kind || '').trim();
@@ -827,8 +752,6 @@ module.exports = {
   // Increase mapping
   upsertUserIncrease,
   getUserIncrease,
-  addUserExternalAccount,
-  listUserExternalAccounts,
   addUserExport,
   listUserExports,
 };

@@ -32,9 +32,6 @@ const {
   getUserIncrease,
   upsertUserIncrease,
 
-  addUserExternalAccount,
-  listUserExternalAccounts,
-
   addUserExport,
   listUserExports,
 } = require('./db');
@@ -1233,39 +1230,6 @@ app.get('/api/account-numbers', requireAuthApi, async (req, res) => {
   }
 });
 
-app.get('/api/external-accounts', requireAuthApi, async (req, res) => {
-  if (!env('INCREASE_API_KEY')) {
-    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
-    return;
-  }
-
-  const limitRaw = req.query?.limit != null ? Number(req.query.limit) : null;
-  const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 50;
-
-  try {
-    const mapped = await listUserExternalAccounts(req.user.id, limit);
-
-    const increase = createIncreaseClient();
-
-    const externalAccounts = [];
-    for (const row of mapped) {
-      const externalAccountId = String(row?.external_account_id || '').trim();
-      if (!externalAccountId) continue;
-
-      try {
-        const ea = await increase.retrieveExternalAccount({ externalAccountId });
-        if (ea) externalAccounts.push(ea);
-      } catch {
-        // ignore
-      }
-    }
-
-    res.json({ data: externalAccounts, next_cursor: null });
-  } catch (err) {
-    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
-  }
-});
-
 app.get('/api/lockboxes', requireAuthApi, async (req, res) => {
   if (!env('INCREASE_API_KEY')) {
     res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
@@ -2129,62 +2093,6 @@ app.post('/api/account-numbers/:accountNumberId/update-inbound-checks-status', r
   }
 });
 
-app.post('/api/external-accounts', requireAuthApi, async (req, res) => {
-  if (!env('INCREASE_API_KEY')) {
-    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
-    return;
-  }
-
-  const description = String(req.body?.description || '').trim();
-  const routingNumber = String(req.body?.routing_number || '').trim();
-  const accountNumber = String(req.body?.account_number || '').trim();
-  const accountHolder = String(req.body?.account_holder || '').trim();
-  const funding = String(req.body?.funding || '').trim();
-
-  if (!description) {
-    res.status(400).json({ error: 'description is required' });
-    return;
-  }
-
-  if (!routingNumber || !accountNumber) {
-    res.status(400).json({ error: 'routing_number and account_number are required' });
-    return;
-  }
-
-  try {
-    const increase = createIncreaseClient();
-    const created = await increase.createExternalAccount({
-      description,
-      routingNumber,
-      accountNumber,
-      accountHolder: accountHolder || undefined,
-      funding: funding || undefined,
-    });
-
-    try {
-      if (created?.id) {
-        await addUserExternalAccount({
-          userId: req.user.id,
-          externalAccountId: String(created.id),
-          description,
-        });
-      }
-    } catch {
-      // Ignore mapping failures (e.g., duplicate insert) so the core call succeeds.
-    }
-
-    createAuditEvent({
-      userId: req.user.id,
-      type: 'increase.external_account.created',
-      payload: { id: created?.id, description },
-    });
-
-    res.status(201).json(created);
-  } catch (err) {
-    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
-  }
-});
-
 app.post('/api/lockboxes', requireAuthApi, async (req, res) => {
   if (!env('INCREASE_API_KEY')) {
     res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
@@ -2913,7 +2821,6 @@ const APP_PAGES = {
   overview: { title: 'Overview', key: 'overview' },
   transactions: { title: 'Transactions', key: 'transactions' },
   transfers: { title: 'Transfers', key: 'transfers' },
-  'external-accounts': { title: 'External Accounts', key: 'external-accounts' },
   lockboxes: { title: 'Lockboxes', key: 'lockboxes' },
   documents: { title: 'Documents', key: 'documents' },
   compliance: { title: 'Compliance', key: 'compliance' },
@@ -5150,7 +5057,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
   let achTransfers = [];
   let cards = [];
   let accountNumbers = [];
-  let externalAccounts = [];
   let lockboxes = [];
   let files = [];
   let accountStatements = [];
@@ -5179,7 +5085,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
   const needsTransfers = hasIncrease && section === 'transfers';
   const needsCards = hasIncrease && section === 'cards';
   const needsAccountNumbers = hasIncrease && section === 'account-numbers';
-  const needsExternalAccounts = hasIncrease && section === 'external-accounts';
   const needsLockboxes = hasIncrease && section === 'lockboxes';
   const needsEntities = hasIncrease && section === 'compliance';
 
@@ -5198,7 +5103,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       needsTransfers ||
       needsCards ||
       needsAccountNumbers ||
-      needsExternalAccounts ||
       needsLockboxes ||
       needsEntities ||
       needsAccountStatements ||
@@ -5294,23 +5198,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
         const acctNumsResp = await increase.listAccountNumbers(q);
         accountNumbers = extractDataArray(acctNumsResp);
-      }
-
-      if (needsExternalAccounts) {
-        const mapped = await listUserExternalAccounts(req.user.id, 50);
-        externalAccounts = [];
-
-        for (const row of mapped) {
-          const externalAccountId = String(row?.external_account_id || '').trim();
-          if (!externalAccountId) continue;
-
-          try {
-            const ea = await increase.retrieveExternalAccount({ externalAccountId });
-            if (ea) externalAccounts.push(ea);
-          } catch {
-            // ignore
-          }
-        }
       }
 
       if (needsLockboxes && userAccountId) {
@@ -6954,187 +6841,6 @@ app.get('/app/:section', requireAuth, async (req, res) => {
               <div role="columnheader">Account</div>
               <div role="columnheader">Status / Routing</div>
               <div role="columnheader" style="text-align:right;">Account number</div>
-            </div>
-
-            ${rows}
-            ${emptyState}
-          </div>
-        </section>
-
-        ${createModal}
-      `;
-    }
-  } else if (section === 'external-accounts') {
-    subtitle = 'External accounts used as ACH transfer destinations';
-
-    const canCreateExternal = hasIncrease && !increaseError;
-    const createExternalBtn = canCreateExternal
-      ? '<button class="btn-primary" type="button" data-open-modal="create-external-account">Create External Account</button>'
-      : `<button class="btn-primary" type="button" disabled title="${
-          hasIncrease ? 'Unable to load Increase data' : 'Set INCREASE_API_KEY to enable'
-        }">Create External Account</button>`;
-
-    actionsHtml = `${createExternalBtn}`;
-
-    if (!hasIncrease) {
-      content = `
-        <section class="card">
-          <h2>External Accounts</h2>
-          <p class="muted" style="margin: 0;">
-            Set <code>INCREASE_API_KEY</code> in your .env to load external accounts.
-          </p>
-        </section>
-      `;
-    } else if (increaseError) {
-      content = `
-        <section class="card">
-          <h2>External Accounts</h2>
-          <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(increaseError.message || 'error'))}</div>
-          <p class="muted" style="margin: 0;">Check your API key and try again.</p>
-        </section>
-      `;
-    } else {
-      const q = String(req.query?.q || '').trim();
-      const qLower = q.toLowerCase();
-
-      const filtered = q
-        ? externalAccounts.filter((ea) => String(ea.description || '').toLowerCase().includes(qLower))
-        : externalAccounts;
-
-      const filterHtml = `
-        <details class="menu">
-          <summary class="btn">Filter <span class="kbd" aria-hidden="true">F</span></summary>
-          <div class="menu-panel" role="menu" aria-label="Filter external accounts">
-            <form class="form tx-filter" method="get" action="/app/external-accounts">
-              <label class="field">
-                <span>Description contains</span>
-                <input name="q" type="text" placeholder="e.g. Vendor" value="${esc(q)}" />
-              </label>
-
-              <div class="tx-filter-actions">
-                <a class="btn" href="/app/external-accounts">Clear</a>
-                <button class="btn-primary" type="submit">Apply</button>
-              </div>
-            </form>
-          </div>
-        </details>
-      `;
-
-      function last4(value) {
-        const s = String(value || '').trim();
-        if (!s) return '';
-        const digits = s.replace(/\D/g, '');
-        if (!digits) return '';
-        return digits.slice(-4);
-      }
-
-      function renderExternalRow(ea) {
-        const created = formatShortDateTime(ea.created_at || ea.created || '');
-        const desc = String(ea.description || ea.id || '');
-        const statusRaw = String(ea.status || '').trim();
-        const statusLabel = humanizeEnum(statusRaw) || statusRaw || '—';
-        const dotClass = `tx-dot ${cardStatusClass(statusRaw)}`;
-
-        const holderRaw = String(ea.account_holder || ea.account_holder_type || '').trim();
-        const fundingRaw = String(ea.funding || '').trim();
-        const meta = [holderRaw, fundingRaw]
-          .filter(Boolean)
-          .map(humanizeEnum)
-          .join(' · ');
-
-        const routing = String(ea.routing_number || '').trim();
-
-        const l4 =
-          last4(ea.account_number_last4) ||
-          last4(ea.last4) ||
-          last4(ea.account_number);
-        const acctDisplay = l4 ? `•••• ${l4}` : '—';
-
-        return `
-          <div class="tx-row">
-            <div class="tx-created"><span class="${dotClass}" aria-hidden="true"></span>${esc(created)}</div>
-            <div class="tx-desc">${esc(desc || '—')}</div>
-            <div class="tx-acct"><span class="pill">${esc(statusLabel)}</span> <span class="muted">${esc(meta)}</span></div>
-            <div class="tx-cat">${esc(routing || '—')}</div>
-            <div class="tx-amt">${esc(acctDisplay)}</div>
-          </div>
-        `;
-      }
-
-      const rows = filtered.map((ea) => renderExternalRow(ea)).join('');
-      const emptyState = !rows ? '<div class="tx-empty">No external accounts found.</div>' : '';
-
-      const createModal = `
-        <div class="modal" data-modal="create-external-account" hidden>
-          <div class="modal-backdrop" data-close-modal></div>
-          <div class="modal-card" role="dialog" aria-modal="true" aria-label="Create external account">
-            <div class="modal-head">
-              <h2>Create external account</h2>
-              <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
-            </div>
-
-            <form class="form" data-form="create-external-account">
-              <label class="field">
-                <span>Description</span>
-                <input name="description" type="text" placeholder="e.g. Vendor payouts" required />
-              </label>
-
-              <label class="field">
-                <span>Routing number</span>
-                <input name="routing_number" type="text" inputmode="numeric" placeholder="011000015" required />
-              </label>
-
-              <label class="field">
-                <span>Account number</span>
-                <input name="account_number" type="text" inputmode="numeric" placeholder="000123456789" required />
-              </label>
-
-              <label class="field">
-                <span>Account holder (optional)</span>
-                <select name="account_holder">
-                  <option value="">Not specified</option>
-                  <option value="individual">Individual</option>
-                  <option value="business">Business</option>
-                </select>
-              </label>
-
-              <label class="field">
-                <span>Funding (optional)</span>
-                <select name="funding">
-                  <option value="">Not specified</option>
-                  <option value="checking">Checking</option>
-                  <option value="savings">Savings</option>
-                </select>
-              </label>
-
-              <div class="modal-actions">
-                <button class="btn" type="button" data-close-modal>Cancel</button>
-                <button class="btn-primary" type="submit">Create</button>
-              </div>
-
-              <div class="modal-error small" data-modal-error hidden></div>
-            </form>
-
-            <p class="small" style="margin: 10px 2px 0;">
-              Tip: External accounts let you re-use bank details when sending or debiting money.
-            </p>
-          </div>
-        </div>
-      `;
-
-      content = `
-        <section class="card">
-          <div class="tx-toolbar">
-            ${filterHtml}
-          </div>
-
-          <div class="tx-table" role="table" aria-label="External accounts">
-            <div class="tx-head" role="row">
-              <div role="columnheader">Created</div>
-              <div role="columnheader">Description</div>
-              <div role="columnheader">Status</div>
-              <div role="columnheader">Routing</div>
-              <div role="columnheader" style="text-align:right;">Account</div>
             </div>
 
             ${rows}

@@ -331,24 +331,6 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
         },
       }),
 
-    // External Accounts
-    listExternalAccounts: (query) => request({ method: 'GET', pathname: '/external_accounts', query }),
-    retrieveExternalAccount: ({ externalAccountId }) =>
-      request({ method: 'GET', pathname: `/external_accounts/${encodeURIComponent(externalAccountId)}` }),
-    createExternalAccount: ({ description, routingNumber, accountNumber, accountHolder, funding, idempotencyKey }) =>
-      request({
-        method: 'POST',
-        pathname: '/external_accounts',
-        headers: idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : undefined,
-        body: {
-          description,
-          routing_number: routingNumber,
-          account_number: accountNumber,
-          ...(accountHolder ? { account_holder: accountHolder } : {}),
-          ...(funding ? { funding } : {}),
-        },
-      }),
-
     // Lockboxes
     listLockboxes: (query) => request({ method: 'GET', pathname: '/lockboxes', query }),
     createLockbox: ({ accountId, description, recipientName, idempotencyKey }) =>
