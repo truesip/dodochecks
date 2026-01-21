@@ -2151,9 +2151,18 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
   // The program is platform-level.
   // Each end-user gets their own natural-person Entity, and their Account is owned by that Entity.
   const programId = env('INCREASE_PROGRAM_ID');
+  const allowSharedEntityFallback = parseBool(env('INCREASE_ALLOW_SHARED_ENTITY_FALLBACK'), false);
+  const platformEntityId = env('INCREASE_ENTITY_ID');
 
   if (!programId) {
     res.status(400).json({ error: 'INCREASE_PROGRAM_ID must be set' });
+    return;
+  }
+
+  if (allowSharedEntityFallback && !platformEntityId) {
+    res.status(400).json({
+      error: 'INCREASE_ENTITY_ID must be set when INCREASE_ALLOW_SHARED_ENTITY_FALLBACK=true',
+    });
     return;
   }
 
@@ -2213,39 +2222,84 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
             zip: String(compliance.zip || '').trim(),
           },
         },
-        ...(fileIds.length ? { supplemental_documents: fileIds.map((file_id) => ({ file_id })) } : {}),
       };
 
-      const createdEntity = await increase.createEntity({
-        body: entityBody,
-        idempotencyKey: `user-${req.user.id}-entity-v2`,
-      });
-      userEntityId = String(createdEntity?.id || '').trim();
+      try {
+        const createdEntity = await increase.createEntity({
+          body: entityBody,
+          idempotencyKey: `user-${req.user.id}-entity-v2`,
+        });
+        userEntityId = String(createdEntity?.id || '').trim();
 
-      if (!userEntityId) {
-        res.status(500).json({ error: 'entity_create_failed' });
-        return;
+        if (!userEntityId) {
+          res.status(500).json({ error: 'entity_create_failed' });
+          return;
+        }
+
+        createAuditEvent({
+          userId: req.user.id,
+          type: 'increase.entity.created',
+          payload: { id: userEntityId, structure: 'natural_person' },
+        });
+
+        // Attach documents (ID + proof of address) as entity supplemental documents.
+        // Not all Increase accounts support `supplemental_documents` during entity creation.
+        for (const fileId of fileIds) {
+          try {
+            await increase.createEntitySupplementalDocument({ entityId: userEntityId, fileId });
+          } catch {
+            // ignore
+          }
+        }
+
+        await upsertUserIncrease({
+          userId: req.user.id,
+          entityId: userEntityId || null,
+          accountId: accountId || null,
+          accountNumberId: accountNumberId || null,
+          lockboxId: lockboxId || null,
+        });
+      } catch (err) {
+        const detail = String(err?.body?.detail || '');
+        const unsupported =
+          Number(err?.status) === 409 && detail.toLowerCase().includes('not supported for your account');
+
+        if (unsupported && allowSharedEntityFallback) {
+          // Proceed without a per-user entity; account will be owned by the platform entity.
+          createAuditEvent({
+            userId: req.user.id,
+            type: 'increase.entity.create_skipped',
+            payload: { reason: 'not_supported_for_account', platform_entity_id: platformEntityId },
+          });
+        } else if (unsupported) {
+          res.status(409).json({
+            error: 'increase_entity_create_not_supported',
+            message:
+              'Your Increase account does not support creating end-user entities via API. Ask Increase to enable it, or set INCREASE_ALLOW_SHARED_ENTITY_FALLBACK=true to provision accounts owned by the platform entity (not recommended for real money).',
+            body: err?.body,
+          });
+          return;
+        } else {
+          throw err;
+        }
       }
-
-      createAuditEvent({
-        userId: req.user.id,
-        type: 'increase.entity.created',
-        payload: { id: userEntityId, structure: 'natural_person' },
-      });
-
-      await upsertUserIncrease({
-        userId: req.user.id,
-        entityId: userEntityId || null,
-        accountId: accountId || null,
-        accountNumberId: accountNumberId || null,
-        lockboxId: lockboxId || null,
-      });
     }
 
     if (!accountId) {
+      const accountEntityId = userEntityId || platformEntityId;
+
+      if (!accountEntityId) {
+        res.status(400).json({
+          error: 'unable_to_select_account_entity',
+          message:
+            'Unable to provision an account because no entity is available. Set INCREASE_ALLOW_SHARED_ENTITY_FALLBACK=true + INCREASE_ENTITY_ID, or enable entity creation on your Increase account.',
+        });
+        return;
+      }
+
       const createdAccount = await increase.createAccount({
         name: `DodoChecks - ${String(compliance.full_name).slice(0, 120)}`,
-        entityId: userEntityId,
+        entityId: accountEntityId,
         programId,
         idempotencyKey: `user-${req.user.id}-account`,
       });
@@ -2254,7 +2308,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
       createAuditEvent({
         userId: req.user.id,
         type: 'increase.account.created',
-        payload: { id: accountId, entity_id: userEntityId },
+        payload: { id: accountId, entity_id: accountEntityId, end_user_entity_id: userEntityId || null },
       });
     }
 
@@ -2299,6 +2353,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
     res.status(201).json({
       ok: true,
       entity_id: userEntityId || null,
+      account_owner_entity_id: (userEntityId || platformEntityId) || null,
       account_id: accountId || null,
       account_number_id: accountNumberId || null,
       lockbox_id: lockboxId || null,
@@ -5870,7 +5925,11 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       const hasProof = docs.some((d) => String(d?.kind || '') === 'proof_of_address');
 
       const encryptionReady = Boolean(getDataEncryptionKey());
-      const increaseReady = hasIncrease && Boolean(env('INCREASE_PROGRAM_ID'));
+      const allowSharedEntityFallback = parseBool(env('INCREASE_ALLOW_SHARED_ENTITY_FALLBACK'), false);
+      const increaseReady =
+        hasIncrease &&
+        Boolean(env('INCREASE_PROGRAM_ID')) &&
+        (!allowSharedEntityFallback || Boolean(env('INCREASE_ENTITY_ID')));
 
       const docsRows = docs
         .map((d) => {
@@ -5913,7 +5972,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
           ? '<div class="alert" role="alert"><strong>Setup:</strong> Set <code>APP_DATA_ENCRYPTION_KEY</code> (base64 32 bytes) to store SSNs.</div>'
           : '',
         !increaseReady
-          ? '<div class="alert" role="alert"><strong>Setup:</strong> Set <code>INCREASE_API_KEY</code> and <code>INCREASE_PROGRAM_ID</code> to provision accounts.</div>'
+          ? '<div class="alert" role="alert"><strong>Setup:</strong> Set <code>INCREASE_API_KEY</code> and <code>INCREASE_PROGRAM_ID</code> to provision accounts. If using the shared-entity fallback, also set <code>INCREASE_ENTITY_ID</code>.</div>'
           : '',
       ]
         .filter(Boolean)
