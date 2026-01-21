@@ -7279,7 +7279,7 @@ app.get('/app/:section', requireAuth, async (req, res) => {
                 <input name="address_line2" type="text" value="${esc(addr2Val)}" />
               </label>
 
-              <div style="display:grid; grid-template-columns: 1fr 120px 140px auto; gap: 12px; align-items: start;">
+              <div style="display:grid; grid-template-columns: 1fr 90px 110px auto; gap: 12px; align-items: start;">
                 <label class="field" style="margin: 0;">
                   <span>City</span>
                   <input name="city" type="text" value="${esc(cityVal)}" required />
