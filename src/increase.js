@@ -317,6 +317,11 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // Inbound ACH Transfers
     listInboundAchTransfers: (query) => request({ method: 'GET', pathname: '/inbound_ach_transfers', query }),
+    retrieveInboundAchTransfer: ({ inboundAchTransferId }) =>
+      request({
+        method: 'GET',
+        pathname: `/inbound_ach_transfers/${encodeURIComponent(inboundAchTransferId)}`,
+      }),
     returnInboundAchTransfer: ({ inboundAchTransferId, reason }) =>
       request({
         method: 'POST',
@@ -380,6 +385,8 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     },
     // Check Deposits
     listCheckDeposits: (query) => request({ method: 'GET', pathname: '/check_deposits', query }),
+    retrieveCheckDeposit: ({ checkDepositId }) =>
+      request({ method: 'GET', pathname: `/check_deposits/${encodeURIComponent(checkDepositId)}` }),
     createCheckDeposit: ({ accountId, amountCents, frontFileId, backFileId, description, idempotencyKey }) =>
       request({
         method: 'POST',
@@ -454,6 +461,8 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // Transfers
     listAchTransfers: (query) => request({ method: 'GET', pathname: '/ach_transfers', query }),
+    retrieveAchTransfer: ({ achTransferId }) =>
+      request({ method: 'GET', pathname: `/ach_transfers/${encodeURIComponent(achTransferId)}` }),
     cancelAchTransfer: ({ achTransferId }) =>
       request({ method: 'POST', pathname: `/ach_transfers/${encodeURIComponent(achTransferId)}/cancel` }),
     createAchTransfer: ({
@@ -480,6 +489,8 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
     cancelCheckTransfer: ({ checkTransferId }) =>
       request({ method: 'POST', pathname: `/check_transfers/${encodeURIComponent(checkTransferId)}/cancel` }),
 
+    retrieveWireTransfer: ({ wireTransferId }) =>
+      request({ method: 'GET', pathname: `/wire_transfers/${encodeURIComponent(wireTransferId)}` }),
     cancelWireTransfer: ({ wireTransferId }) =>
       request({ method: 'POST', pathname: `/wire_transfers/${encodeURIComponent(wireTransferId)}/cancel` }),
 
@@ -491,6 +502,8 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // Check transfers (mail checks)
     listCheckTransfers: (query) => request({ method: 'GET', pathname: '/check_transfers', query }),
+    retrieveCheckTransfer: ({ checkTransferId }) =>
+      request({ method: 'GET', pathname: `/check_transfers/${encodeURIComponent(checkTransferId)}` }),
     createCheckTransfer: ({
       accountId,
       sourceAccountNumberId,
@@ -551,6 +564,11 @@ function createIncreaseClient({ apiKey, baseUrl, debug } = {}) {
 
     // Inbound wire transfers
     listInboundWireTransfers: (query) => request({ method: 'GET', pathname: '/inbound_wire_transfers', query }),
+    retrieveInboundWireTransfer: ({ inboundWireTransferId }) =>
+      request({
+        method: 'GET',
+        pathname: `/inbound_wire_transfers/${encodeURIComponent(inboundWireTransferId)}`,
+      }),
   };
 }
 

@@ -941,6 +941,137 @@ app.post('/api/transactions/:transactionId/return-inbound-ach', requireAuthApi, 
   }
 });
 
+app.post('/api/transfers/:transferId/cancel', requireAuthApi, async (req, res) => {
+  if (!env('INCREASE_API_KEY')) {
+    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+    return;
+  }
+
+  const transferId = String(req.params.transferId || '').trim();
+  if (!transferId) {
+    res.status(400).json({ error: 'transferId is required' });
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
+  try {
+    const increase = createIncreaseClient();
+
+    let transfer;
+    let canceled;
+
+    if (transferId.startsWith('ach_transfer_')) {
+      transfer = await increase.retrieveAchTransfer({ achTransferId: transferId });
+      const tAccountId = String(transfer?.account_id || '').trim();
+      if (tAccountId && tAccountId !== accountId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      canceled = await increase.cancelAchTransfer({ achTransferId: transferId });
+    } else if (transferId.startsWith('wire_transfer_')) {
+      transfer = await increase.retrieveWireTransfer({ wireTransferId: transferId });
+      const tAccountId = String(transfer?.account_id || '').trim();
+      if (tAccountId && tAccountId !== accountId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      canceled = await increase.cancelWireTransfer({ wireTransferId: transferId });
+    } else if (transferId.startsWith('check_transfer_')) {
+      transfer = await increase.retrieveCheckTransfer({ checkTransferId: transferId });
+      const tAccountId = String(transfer?.account_id || '').trim();
+      if (tAccountId && tAccountId !== accountId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      canceled = await increase.cancelCheckTransfer({ checkTransferId: transferId });
+    } else {
+      res.status(400).json({ error: 'cancel_not_supported_for_transfer_type' });
+      return;
+    }
+
+    createAuditEvent({
+      userId: req.user.id,
+      type: 'increase.transfer.canceled',
+      payload: { transfer_id: transferId },
+    });
+
+    res.status(200).json(canceled);
+  } catch (err) {
+    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+  }
+});
+
+app.post('/api/transfers/:transferId/return-inbound-ach', requireAuthApi, async (req, res) => {
+  if (!env('INCREASE_API_KEY')) {
+    res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
+    return;
+  }
+
+  const transferId = String(req.params.transferId || '').trim();
+  if (!transferId) {
+    res.status(400).json({ error: 'transferId is required' });
+    return;
+  }
+
+  if (!transferId.startsWith('inbound_ach_transfer_')) {
+    res.status(400).json({ error: 'return_not_supported_for_transfer_type' });
+    return;
+  }
+
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) {
+    res.status(400).json({ error: 'reason is required' });
+    return;
+  }
+
+  // Basic validation; Increase enforces the actual enum.
+  if (!/^[a-z0-9_\-]+$/i.test(reason) || reason.length > 100) {
+    res.status(400).json({
+      error: 'reason must be 100 characters or fewer and contain only letters, numbers, underscore, or dash',
+    });
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    res.status(400).json({ error: 'account_not_provisioned' });
+    return;
+  }
+
+  try {
+    const increase = createIncreaseClient();
+
+    const inbound = await increase.retrieveInboundAchTransfer({ inboundAchTransferId: transferId });
+    const tAccountId = String(inbound?.account_id || '').trim();
+
+    if (tAccountId && tAccountId !== accountId) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+
+    const returned = await increase.returnInboundAchTransfer({ inboundAchTransferId: transferId, reason });
+
+    createAuditEvent({
+      userId: req.user.id,
+      type: 'increase.inbound_ach_transfer.returned',
+      payload: { inbound_ach_transfer_id: transferId, reason },
+    });
+
+    res.status(200).json(returned);
+  } catch (err) {
+    res.status(Number(err?.status) || 500).json({ error: String(err?.message || err), body: err?.body });
+  }
+});
+
 app.get('/api/transfers', requireAuthApi, async (req, res) => {
   if (!env('INCREASE_API_KEY')) {
     res.status(400).json({ error: 'INCREASE_API_KEY is not set' });
@@ -3892,6 +4023,453 @@ app.get('/app/transactions/:transactionId', requireAuth, async (req, res) => {
   );
 });
 
+app.get('/app/transfers/:transferId', requireAuth, async (req, res) => {
+  const transferId = String(req.params.transferId || '').trim();
+  if (!transferId) {
+    res.status(404).type('text/plain').send('Not found');
+    return;
+  }
+
+  const hasIncrease = Boolean(env('INCREASE_API_KEY'));
+
+  const backTab = (() => {
+    const raw = String(req.query?.tab || '').trim().toLowerCase();
+    const allowed = new Set(['originated', 'received', 'scheduled']);
+    return allowed.has(raw) ? raw : '';
+  })();
+
+  const backHref = backTab ? `/app/transfers?tab=${encodeURIComponent(backTab)}` : '/app/transfers';
+
+  let title = 'Transfer';
+  let subtitle = 'Transfer details';
+  let actionsHtml = `<a class="btn" href="${esc(backHref)}">Back</a>`;
+  let content = '';
+
+  if (!hasIncrease) {
+    content = `
+      <section class="card">
+        <h2>Transfer</h2>
+        <p class="muted" style="margin: 0;">Set <code>INCREASE_API_KEY</code> in your .env to load transfer data.</p>
+      </section>
+    `;
+
+    res.type('html').send(
+      renderAppLayout({
+        title,
+        subtitle,
+        activeKey: 'transfers',
+        user: req.user,
+        content,
+        actionsHtml,
+      })
+    );
+    return;
+  }
+
+  const userIncrease = await getUserIncrease(req.user.id);
+  const accountId = userIncrease?.account_id ? String(userIncrease.account_id).trim() : '';
+
+  if (!accountId) {
+    content = `
+      <section class="card">
+        <h2>Transfer</h2>
+        <p class="muted" style="margin: 0;">Finish compliance and provision your account to view transfers.</p>
+        <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+          <a class="btn-primary" href="/app/compliance">Go to Compliance</a>
+          <a class="btn" href="/app/overview">Back to Overview</a>
+        </div>
+      </section>
+    `;
+
+    res.type('html').send(
+      renderAppLayout({
+        title,
+        subtitle,
+        activeKey: 'transfers',
+        user: req.user,
+        content,
+        actionsHtml,
+      })
+    );
+    return;
+  }
+
+  const increase = createIncreaseClient();
+
+  function safeString(v) {
+    return String(v == null ? '' : v).trim();
+  }
+
+  function accountLast4(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    if (!digits) return '';
+    return digits.length <= 4 ? digits : digits.slice(-4);
+  }
+
+  function maskAccountNumber(value) {
+    const last4 = accountLast4(value);
+    return last4 ? `•••• ${last4}` : '';
+  }
+
+  function maskRoutingNumber(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.length <= 4) return digits;
+    return `••••${digits.slice(-4)}`;
+  }
+
+  try {
+    let transfer = null;
+    let transferType = 'Transfer';
+
+    if (transferId.startsWith('ach_transfer_')) {
+      transfer = await increase.retrieveAchTransfer({ achTransferId: transferId });
+      transferType = 'ACH transfer';
+    } else if (transferId.startsWith('wire_transfer_')) {
+      transfer = await increase.retrieveWireTransfer({ wireTransferId: transferId });
+      transferType = 'Wire transfer';
+    } else if (transferId.startsWith('check_transfer_')) {
+      transfer = await increase.retrieveCheckTransfer({ checkTransferId: transferId });
+      transferType = 'Check transfer';
+    } else if (transferId.startsWith('check_deposit_')) {
+      transfer = await increase.retrieveCheckDeposit({ checkDepositId: transferId });
+      transferType = 'Check deposit';
+    } else if (transferId.startsWith('inbound_ach_transfer_')) {
+      transfer = await increase.retrieveInboundAchTransfer({ inboundAchTransferId: transferId });
+      transferType = 'Inbound ACH transfer';
+    } else if (transferId.startsWith('inbound_wire_transfer_')) {
+      transfer = await increase.retrieveInboundWireTransfer({ inboundWireTransferId: transferId });
+      transferType = 'Inbound wire transfer';
+    } else {
+      res.status(404).type('text/plain').send('Not found');
+      return;
+    }
+
+    const transferAccountId = safeString(transfer?.account_id);
+    if (transferAccountId && transferAccountId !== accountId) {
+      res.status(404).type('text/plain').send('Not found');
+      return;
+    }
+
+    const id = safeString(transfer?.id || transferId);
+    const created = formatShortDateTime(transfer?.created_at || transfer?.created || '');
+
+    const amountCents = getTxAmountCents(transfer);
+    const amount = amountCents == null ? '—' : formatUsdFromCents(amountCents);
+
+    const statusRaw = safeString(getTransferStatus(transfer) || transfer?.status);
+    const statusLabel = humanizeEnum(statusRaw) || statusRaw || '—';
+    const dotClass = `tx-dot ${transferStatusClass(statusRaw)}`;
+
+    // Describe the counterparty in a safe way.
+    let description = '';
+
+    if (transferId.startsWith('ach_transfer_')) {
+      description = safeString(transfer?.statement_descriptor || transfer?.description);
+    } else if (transferId.startsWith('wire_transfer_')) {
+      description = safeString(transfer?.creditor?.name);
+    } else if (transferId.startsWith('check_transfer_')) {
+      description = safeString(transfer?.physical_check?.recipient_name);
+    } else if (transferId.startsWith('inbound_wire_transfer_')) {
+      description = safeString(transfer?.sender?.name);
+    } else if (transferId.startsWith('inbound_ach_transfer_')) {
+      description = safeString(
+        transfer?.originator_company_entry_description || transfer?.originator_company_name || transfer?.addenda
+      );
+    } else if (transferId.startsWith('check_deposit_')) {
+      description = safeString(transfer?.description);
+    }
+
+    title = description || transferType;
+    subtitle = [transferType, statusLabel && statusLabel !== '—' ? statusLabel : '', id ? `ID ${id}` : '']
+      .filter(Boolean)
+      .join(' · ');
+
+    const rawJson = esc(JSON.stringify(redactForUi(transfer), null, 2));
+
+    // Extra details by transfer type
+    let extra = '';
+
+    if (transferId.startsWith('ach_transfer_')) {
+      const dir = safeString(transfer?.direction);
+      const funding = safeString(transfer?.funding);
+      const statement = safeString(transfer?.statement_descriptor);
+      const trace = safeString(transfer?.trace_number);
+      const effective = safeString(transfer?.effective_date);
+      const settlement = safeString(transfer?.settlement_schedule);
+      const sec = safeString(transfer?.standard_entry_class_code);
+
+      const routing = safeString(transfer?.routing_number);
+      const routingMasked = routing ? maskRoutingNumber(routing) : '';
+
+      const last4 = safeString(transfer?.account_number_last4 || transfer?.account_number_last_4);
+      const acctMasked = last4 ? `•••• ${last4}` : maskAccountNumber(transfer?.account_number);
+
+      extra = `
+        <div class="k">Direction</div>
+        <div class="v">${esc(humanizeEnum(dir) || dir || '—')}</div>
+
+        <div class="k">Funding</div>
+        <div class="v">${esc(humanizeEnum(funding) || funding || '—')}</div>
+
+        <div class="k">Statement descriptor</div>
+        <div class="v">${esc(statement || '—')}</div>
+
+        <div class="k">Routing number</div>
+        <div class="v">${routingMasked ? `<code>${esc(routingMasked)}</code>` : '—'}</div>
+
+        <div class="k">Account number</div>
+        <div class="v">${acctMasked ? `<code>${esc(acctMasked)}</code>` : '—'}</div>
+
+        <div class="k">Trace number</div>
+        <div class="v">${trace ? `<code>${esc(trace)}</code>` : '—'}</div>
+
+        <div class="k">Effective date</div>
+        <div class="v">${esc(effective || '—')}</div>
+
+        <div class="k">Settlement schedule</div>
+        <div class="v">${esc(humanizeEnum(settlement) || settlement || '—')}</div>
+
+        <div class="k">SEC code</div>
+        <div class="v">${esc(sec || '—')}</div>
+      `;
+    } else if (transferId.startsWith('wire_transfer_')) {
+      const creditor = safeString(transfer?.creditor?.name);
+      const last4 = safeString(transfer?.account_number_last4 || transfer?.account_number_last_4);
+      const acctMasked = last4 ? `•••• ${last4}` : maskAccountNumber(transfer?.account_number);
+      const routing = safeString(transfer?.routing_number);
+      const routingMasked = routing ? maskRoutingNumber(routing) : '';
+
+      extra = `
+        <div class="k">Beneficiary</div>
+        <div class="v">${esc(creditor || '—')}</div>
+
+        <div class="k">Routing number</div>
+        <div class="v">${routingMasked ? `<code>${esc(routingMasked)}</code>` : '—'}</div>
+
+        <div class="k">Account number</div>
+        <div class="v">${acctMasked ? `<code>${esc(acctMasked)}</code>` : '—'}</div>
+      `;
+    } else if (transferId.startsWith('check_transfer_')) {
+      const recipient = safeString(transfer?.physical_check?.recipient_name);
+      const memo = safeString(transfer?.physical_check?.memo);
+      const method = safeString(transfer?.fulfillment_method);
+
+      extra = `
+        <div class="k">Recipient</div>
+        <div class="v">${esc(recipient || '—')}</div>
+
+        <div class="k">Memo</div>
+        <div class="v">${esc(memo || '—')}</div>
+
+        <div class="k">Fulfillment</div>
+        <div class="v">${esc(humanizeEnum(method) || method || '—')}</div>
+      `;
+    } else if (transferId.startsWith('inbound_ach_transfer_')) {
+      const company = safeString(transfer?.originator_company_name);
+      const entry = safeString(transfer?.originator_company_entry_description);
+      const addenda = safeString(transfer?.addenda);
+
+      extra = `
+        <div class="k">Originator</div>
+        <div class="v">${esc(company || '—')}</div>
+
+        <div class="k">Entry description</div>
+        <div class="v">${esc(entry || '—')}</div>
+
+        <div class="k">Addenda</div>
+        <div class="v">${esc(addenda || '—')}</div>
+      `;
+    } else if (transferId.startsWith('inbound_wire_transfer_')) {
+      const sender = safeString(transfer?.sender?.name);
+      const imad = safeString(transfer?.imad);
+      const omad = safeString(transfer?.omad);
+
+      extra = `
+        <div class="k">Sender</div>
+        <div class="v">${esc(sender || '—')}</div>
+
+        <div class="k">IMAD</div>
+        <div class="v">${imad ? `<code>${esc(imad)}</code>` : '—'}</div>
+
+        <div class="k">OMAD</div>
+        <div class="v">${omad ? `<code>${esc(omad)}</code>` : '—'}</div>
+      `;
+    } else if (transferId.startsWith('check_deposit_')) {
+      const front = safeString(transfer?.front_image_file_id);
+      const back = safeString(transfer?.back_image_file_id);
+      const desc = safeString(transfer?.description);
+
+      extra = `
+        <div class="k">Description</div>
+        <div class="v">${esc(desc || '—')}</div>
+
+        <div class="k">Front image</div>
+        <div class="v">${front ? `<code>${esc(front)}</code>` : '—'}</div>
+
+        <div class="k">Back image</div>
+        <div class="v">${back ? `<code>${esc(back)}</code>` : '—'}</div>
+      `;
+    }
+
+    const detailsCard = `
+      <section class="card">
+        <h2>Details</h2>
+        <div class="kv">
+          <div class="k">Type</div>
+          <div class="v">${esc(transferType)}</div>
+
+          <div class="k">Status</div>
+          <div class="v"><span class="pill" style="display:inline-flex;align-items:center;gap:8px;"><span class="${dotClass}" aria-hidden="true"></span>${esc(statusLabel)}</span></div>
+
+          <div class="k">Amount</div>
+          <div class="v">${esc(amount)}</div>
+
+          <div class="k">Created</div>
+          <div class="v">${esc(created || '—')}</div>
+
+          <div class="k">Account</div>
+          <div class="v"><code>${esc(accountId)}</code></div>
+
+          <div class="k">Transfer ID</div>
+          <div class="v"><code>${esc(id)}</code></div>
+
+          ${extra}
+        </div>
+
+        <details style="margin-top: 14px;">
+          <summary class="btn">Raw (sanitized)</summary>
+          <pre class="small" style="white-space: pre-wrap; margin: 12px 0 0;">${rawJson}</pre>
+        </details>
+      </section>
+    `;
+
+    const isCancelable =
+      transferId.startsWith('ach_transfer_') ||
+      transferId.startsWith('wire_transfer_') ||
+      transferId.startsWith('check_transfer_');
+
+    const isInboundAch = transferId.startsWith('inbound_ach_transfer_');
+
+    const actionButtons = [];
+    if (isCancelable) {
+      actionButtons.push(`<button class="btn" type="button" data-open-modal="transfer-cancel">Cancel transfer</button>`);
+    }
+    if (isInboundAch) {
+      actionButtons.push(
+        `<button class="btn" type="button" data-open-modal="transfer-return-inbound-ach">Return inbound ACH</button>`
+      );
+    }
+
+    const actionsCard = `
+      <section class="card">
+        <h2>Actions</h2>
+        <div class="alert" data-inline-error hidden></div>
+
+        ${
+          actionButtons.length
+            ? `<div style="display:flex; gap: 10px; flex-wrap: wrap;">${actionButtons.join('')}</div>`
+            : '<div class="small">No actions available for this transfer.</div>'
+        }
+
+        <p class="small" style="margin: 12px 2px 0;">These actions call real Increase endpoints. No simulations are available.</p>
+      </section>
+    `;
+
+    const cancelModal =
+      isCancelable
+        ? `
+          <div class="modal" data-modal="transfer-cancel" hidden>
+            <div class="modal-backdrop" data-close-modal></div>
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Cancel transfer">
+              <div class="modal-head">
+                <h2>Cancel transfer</h2>
+                <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
+              </div>
+
+              <p class="muted" style="margin: 0;">This will attempt to cancel the transfer in Increase (if it has not already settled).</p>
+
+              <form class="form" data-form="transfer-cancel">
+                <input type="hidden" name="transfer_id" value="${esc(id)}" />
+
+                <div class="modal-actions">
+                  <button class="btn" type="button" data-close-modal>Nevermind</button>
+                  <button class="btn-primary" type="submit">Cancel transfer</button>
+                </div>
+
+                <div class="modal-error small" data-modal-error hidden></div>
+              </form>
+            </div>
+          </div>
+        `
+        : '';
+
+    const returnInboundAchModal =
+      isInboundAch
+        ? `
+          <div class="modal" data-modal="transfer-return-inbound-ach" hidden>
+            <div class="modal-backdrop" data-close-modal></div>
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="Return inbound ACH">
+              <div class="modal-head">
+                <h2>Return inbound ACH</h2>
+                <button class="icon-btn" type="button" data-close-modal aria-label="Close">×</button>
+              </div>
+
+              <p class="muted" style="margin: 0;">This will submit a return for the inbound ACH transfer in Increase.</p>
+
+              <form class="form" data-form="transfer-return-inbound-ach">
+                <input type="hidden" name="transfer_id" value="${esc(id)}" />
+
+                <label class="field">
+                  <span>Reason</span>
+                  <input name="reason" type="text" required placeholder="e.g. insufficient_funds" />
+                </label>
+
+                <div class="modal-actions">
+                  <button class="btn" type="button" data-close-modal>Cancel</button>
+                  <button class="btn-primary" type="submit">Return</button>
+                </div>
+
+                <div class="modal-error small" data-modal-error hidden></div>
+              </form>
+
+              <p class="small" style="margin: 10px 2px 0;">Reason must match Increase’s return reason enum.</p>
+            </div>
+          </div>
+        `
+        : '';
+
+    content = `
+      <section class="grid">
+        ${detailsCard}
+        ${actionsCard}
+      </section>
+
+      ${cancelModal}
+      ${returnInboundAchModal}
+    `;
+  } catch (err) {
+    content = `
+      <section class="card">
+        <h2>Transfer</h2>
+        <div class="alert" role="alert"><strong>Increase:</strong> ${esc(String(err?.message || 'error'))}</div>
+        <p class="muted" style="margin: 0;">Check the transfer id and your API key, then try again.</p>
+      </section>
+    `;
+  }
+
+  res.type('html').send(
+    renderAppLayout({
+      title,
+      subtitle,
+      activeKey: 'transfers',
+      user: req.user,
+      content,
+      actionsHtml,
+    })
+  );
+});
+
 app.get('/app/compliance/:entityId', requireAuth, async (req, res) => {
   const entityId = String(req.params.entityId || '').trim();
   if (!entityId) {
@@ -5674,8 +6252,9 @@ app.get('/app/:section', requireAuth, async (req, res) => {
         return String(v == null ? '' : v).trim();
       }
 
-      function normalizeBase({ kind, createdAt, description, statusRaw, amountCents }) {
+      function normalizeBase({ id, kind, createdAt, description, statusRaw, amountCents }) {
         return {
+          id,
           kind,
           created_at: createdAt,
           description,
@@ -5685,55 +6264,61 @@ app.get('/app/:section', requireAuth, async (req, res) => {
       }
 
       function normalizeAch(t) {
+        const id = safeString(t?.id);
         const createdAt = safeString(t?.created_at || t?.created);
-        const desc = getTransferDescription(t) || safeString(t?.id) || 'ACH transfer';
+        const desc = getTransferDescription(t) || id || 'ACH transfer';
         const statusRaw = getTransferStatus(t) || safeString(t?.status);
         const amountCents = getTxAmountCents(t);
-        return normalizeBase({ kind: 'ACH', createdAt, description: desc, statusRaw, amountCents });
+        return normalizeBase({ id, kind: 'ACH', createdAt, description: desc, statusRaw, amountCents });
       }
 
       function normalizeWire(t) {
+        const id = safeString(t?.id);
         const createdAt = safeString(t?.created_at || t?.created);
         const creditorName = safeString(t?.creditor?.name);
         const last4 = safeString(t?.account_number_last4 || t?.account_number_last_4);
-        const desc = [creditorName, last4 ? `•••• ${last4}` : ''].filter(Boolean).join(' · ') || safeString(t?.id) || 'Wire transfer';
+        const desc = [creditorName, last4 ? `•••• ${last4}` : ''].filter(Boolean).join(' · ') || id || 'Wire transfer';
         const statusRaw = safeString(t?.status);
         const amountCents = getTxAmountCents(t);
-        return normalizeBase({ kind: 'Wire', createdAt, description: desc, statusRaw, amountCents });
+        return normalizeBase({ id, kind: 'Wire', createdAt, description: desc, statusRaw, amountCents });
       }
 
       function normalizeCheck(t) {
+        const id = safeString(t?.id);
         const createdAt = safeString(t?.created_at || t?.created);
         const recipient = safeString(t?.physical_check?.recipient_name);
-        const desc = recipient ? `To ${recipient}` : safeString(t?.id) || 'Check transfer';
+        const desc = recipient ? `To ${recipient}` : id || 'Check transfer';
         const statusRaw = safeString(t?.status);
         const amountCents = getTxAmountCents(t);
-        return normalizeBase({ kind: 'Check', createdAt, description: desc, statusRaw, amountCents });
+        return normalizeBase({ id, kind: 'Check', createdAt, description: desc, statusRaw, amountCents });
       }
 
       function normalizeCheckDeposit(t) {
+        const id = safeString(t?.id);
         const createdAt = safeString(t?.created_at || t?.created);
-        const desc = safeString(t?.description) || safeString(t?.id) || 'Check deposit';
+        const desc = safeString(t?.description) || id || 'Check deposit';
         const statusRaw = safeString(t?.status);
         const amountCents = getTxAmountCents(t);
-        return normalizeBase({ kind: 'Deposit', createdAt, description: desc, statusRaw, amountCents });
+        return normalizeBase({ id, kind: 'Deposit', createdAt, description: desc, statusRaw, amountCents });
       }
 
       function normalizeInboundAch(t) {
+        const id = safeString(t?.id);
         const createdAt = safeString(t?.created_at || t?.created);
         const statusRaw = safeString(t?.status);
         const amountCents = getTxAmountCents(t);
-        const desc = safeString(t?.addenda) || safeString(t?.id) || 'Inbound ACH';
-        return normalizeBase({ kind: 'Inbound ACH', createdAt, description: desc, statusRaw, amountCents });
+        const desc = safeString(t?.addenda) || id || 'Inbound ACH';
+        return normalizeBase({ id, kind: 'Inbound ACH', createdAt, description: desc, statusRaw, amountCents });
       }
 
       function normalizeInboundWire(t) {
+        const id = safeString(t?.id);
         const createdAt = safeString(t?.created_at || t?.created);
         const statusRaw = safeString(t?.status);
         const amountCents = getTxAmountCents(t);
         const sender = safeString(t?.sender?.name);
-        const desc = sender ? `From ${sender}` : safeString(t?.id) || 'Inbound wire';
-        return normalizeBase({ kind: 'Inbound wire', createdAt, description: desc, statusRaw, amountCents });
+        const desc = sender ? `From ${sender}` : id || 'Inbound wire';
+        return normalizeBase({ id, kind: 'Inbound wire', createdAt, description: desc, statusRaw, amountCents });
       }
 
       const originatedAll = ([]
@@ -5769,15 +6354,22 @@ app.get('/app/:section', requireAuth, async (req, res) => {
 
         const statusLabel = humanizeEnum(row.status_raw) || safeString(row.status_raw) || '—';
 
-        return `
-          <div class="tx-row">
-            <div class="tx-created"><span class="${dotClass}" aria-hidden="true"></span>${esc(created || '—')}</div>
-            <div class="tx-desc">${esc(row.kind || '—')}</div>
-            <div class="tx-acct">${esc(row.description || '—')}</div>
-            <div class="tx-cat"><span class="pill">${esc(statusLabel)}</span></div>
-            <div class="tx-amt${neg ? ' neg' : ''}">${esc(amount)}</div>
-          </div>
+        const id = safeString(row.id);
+        const href = id ? `/app/transfers/${encodeURIComponent(id)}?tab=${encodeURIComponent(tab)}` : '';
+
+        const inner = `
+          <div class=\"tx-created\"><span class=\"${dotClass}\" aria-hidden=\"true\"></span>${esc(created || '—')}</div>
+          <div class=\"tx-desc\">${esc(row.kind || '—')}</div>
+          <div class=\"tx-acct\">${esc(row.description || '—')}</div>
+          <div class=\"tx-cat\"><span class=\"pill\">${esc(statusLabel)}</span></div>
+          <div class=\"tx-amt${neg ? ' neg' : ''}\">${esc(amount)}</div>
         `;
+
+        if (!href) {
+          return `<div class=\"tx-row\">${inner}</div>`;
+        }
+
+        return `<a class=\"tx-row tx-row-link\" href=\"${esc(href)}\" aria-label=\"View transfer ${esc(row.kind || id)}\">${inner}</a>`;
       }
 
       const rows = list.map((r) => renderRow(r)).join('');

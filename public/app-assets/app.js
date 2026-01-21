@@ -1232,4 +1232,65 @@
       }
     });
   });
+
+  // Transfer detail: cancel transfer
+  qsa('form[data-form="transfer-cancel"]').forEach(function (form) {
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      var modal = form.closest('.modal');
+      var submit = qs('button[type="submit"]', form);
+
+      var transferId = String(qs('[name="transfer_id"]', form).value || '').trim();
+      if (!transferId) {
+        setModalError(modal, 'Transfer is required.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/transfers/' + encodeURIComponent(transferId) + '/cancel', {});
+        window.location.reload();
+      } catch (err) {
+        setModalError(modal, err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
+
+  // Transfer detail: return inbound ACH
+  qsa('form[data-form="transfer-return-inbound-ach"]').forEach(function (form) {
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      var modal = form.closest('.modal');
+      var submit = qs('button[type="submit"]', form);
+
+      var transferId = String(qs('[name="transfer_id"]', form).value || '').trim();
+      var reason = String(qs('[name="reason"]', form).value || '').trim();
+
+      if (!transferId) {
+        setModalError(modal, 'Transfer is required.');
+        return;
+      }
+
+      if (!reason) {
+        setModalError(modal, 'Reason is required.');
+        return;
+      }
+
+      if (submit) submit.disabled = true;
+
+      try {
+        await postJson('/api/transfers/' + encodeURIComponent(transferId) + '/return-inbound-ach', {
+          reason: reason,
+        });
+        window.location.reload();
+      } catch (err) {
+        setModalError(modal, err.message || 'Something went wrong.');
+        if (submit) submit.disabled = false;
+      }
+    });
+  });
 })();
