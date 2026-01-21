@@ -2298,7 +2298,7 @@ app.post('/api/onboarding/provision', requireAuthApi, async (req, res) => {
       }
 
       const createdAccount = await increase.createAccount({
-        name: `DodoChecks - ${String(compliance.full_name).slice(0, 120)}`,
+        name: `DodoChecks - User ${req.user.id}`,
         entityId: accountEntityId,
         programId,
         idempotencyKey: `user-${req.user.id}-account`,

@@ -43,32 +43,44 @@ function redact(value, path = []) {
   if (typeof value === 'object') {
     const out = {};
     const parentKey = path[path.length - 1];
+    const parentKeyLower = parentKey ? String(parentKey).toLowerCase() : '';
 
     for (const [k, v] of Object.entries(value)) {
       const key = String(k);
+      const keyLower = key.toLowerCase();
       const nextPath = path.concat(key);
 
+      const isAddressObject = parentKeyLower.includes('address');
+      const isSensitiveAddressField =
+        isAddressObject &&
+        (keyLower === 'line1' ||
+          keyLower === 'line2' ||
+          keyLower === 'city' ||
+          keyLower === 'state' ||
+          keyLower === 'zip' ||
+          keyLower === 'postal_code' ||
+          keyLower === 'country');
+
       if (
-        key === 'account_number' ||
-        key === 'routing_number' ||
-        key === 'api_key' ||
-        key === 'token' ||
-        key === 'authorization' ||
-        key === 'identification_number' ||
-        key === 'tax_identifier' ||
-        key === 'tax_identification_number' ||
-        key === 'taxpayer_identification_number' ||
-        key === 'ssn' ||
-        key === 'social_security_number' ||
-        (key === 'number' && parentKey === 'identification') ||
-        (parentKey === 'natural_person' && (key === 'name' || key === 'date_of_birth')) ||
-        (parentKey === 'address' &&
-          (key === 'line1' ||
-            key === 'line2' ||
-            key === 'city' ||
-            key === 'state' ||
-            key === 'zip' ||
-            key === 'postal_code'))
+        keyLower === 'account_number' ||
+        keyLower === 'routing_number' ||
+        keyLower === 'api_key' ||
+        keyLower === 'token' ||
+        keyLower === 'authorization' ||
+        keyLower === 'identification_number' ||
+        keyLower === 'tax_identifier' ||
+        keyLower === 'tax_identification_number' ||
+        keyLower === 'taxpayer_identification_number' ||
+        keyLower === 'ssn' ||
+        keyLower === 'social_security_number' ||
+        keyLower === 'email' ||
+        keyLower === 'phone' ||
+        keyLower === 'date_of_birth' ||
+        keyLower === 'recipient_name' ||
+        keyLower === 'creditor_name' ||
+        keyLower === 'name' ||
+        (keyLower === 'number' && parentKeyLower === 'identification') ||
+        isSensitiveAddressField
       ) {
         out[key] = '[REDACTED]';
       } else {
