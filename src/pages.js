@@ -50,8 +50,6 @@ function icon(name) {
       return `<svg ${common}><rect ${s} x="4" y="7" width="16" height="12" rx="2"/><path ${s} d="M4 11h16"/><path ${s} d="M8 16h4"/></svg>`;
     case 'account_numbers':
       return `<svg ${common}><path ${s} d="M4 6h16"/><path ${s} d="M4 10h16"/><path ${s} d="M4 14h10"/><path ${s} d="M4 18h10"/></svg>`;
-    case 'lockboxes':
-      return `<svg ${common}><rect ${s} x="4" y="10" width="16" height="10" rx="2"/><path ${s} d="M8 10V8a4 4 0 0 1 8 0v2"/><path ${s} d="M12 15v2"/></svg>`;
     case 'documents':
       return `<svg ${common}><path ${s} d="M8 3h8l4 4v14H8V3Z"/><path ${s} d="M16 3v5h5"/><path ${s} d="M10 12h8"/><path ${s} d="M10 16h8"/></svg>`;
     case 'compliance':
@@ -67,7 +65,6 @@ const NAV_ITEMS = [
   { key: 'overview', label: 'Overview', href: '/app/overview', icon: icon('overview') },
   { key: 'transactions', label: 'Transactions', href: '/app/transactions', icon: icon('transactions') },
   { key: 'transfers', label: 'Transfers', href: '/app/transfers', icon: icon('transfers') },
-  { key: 'lockboxes', label: 'Lockboxes', href: '/app/lockboxes', icon: icon('lockboxes') },
   { key: 'documents', label: 'Documents', href: '/app/documents', icon: icon('documents') },
   { key: 'compliance', label: 'Compliance', href: '/app/compliance', icon: icon('compliance') },
 ];
@@ -94,7 +91,7 @@ function renderAuthPage({ mode, error, next = '', email = '' }) {
 
         <div class="auth-card">
           <h1>${isSignup ? 'Create your account' : 'Log in'}</h1>
-          <p class="muted">${isSignup ? 'Start sending and depositing checks with a modern workflow.' : 'Welcome back. Continue to your dashboard.'}</p>
+          <p class="muted">${isSignup ? 'Start sending checks with a modern workflow.' : 'Welcome back. Continue to your dashboard.'}</p>
           ${errorHtml}
 
           <form method="post" action="/${isSignup ? 'signup' : 'login'}" class="form">

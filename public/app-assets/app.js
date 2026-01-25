@@ -474,39 +474,6 @@
     });
   }
 
-  // Create Lockbox
-  var createLockboxForm = qs('form[data-form="create-lockbox"]');
-  if (createLockboxForm) {
-    createLockboxForm.addEventListener('submit', async function (e) {
-      e.preventDefault();
-
-      var modal = createLockboxForm.closest('.modal');
-      var submit = qs('button[type="submit"]', createLockboxForm);
-
-      var accountId = String(qs('[name="account_id"]', createLockboxForm).value || '').trim();
-      var description = String(qs('[name="description"]', createLockboxForm).value || '').trim();
-      var recipientName = String(qs('[name="recipient_name"]', createLockboxForm).value || '').trim();
-
-      if (!accountId) {
-        setModalError(modal, 'Account is required.');
-        return;
-      }
-
-      if (submit) submit.disabled = true;
-
-      try {
-        await postJson('/api/lockboxes', {
-          account_id: accountId,
-          description: description || undefined,
-          recipient_name: recipientName || undefined,
-        });
-        window.location.reload();
-      } catch (err) {
-        setModalError(modal, err.message || 'Something went wrong.');
-        if (submit) submit.disabled = false;
-      }
-    });
-  }
 
   // Upload Document (Files)
   var uploadFileForm = qs('form[data-form="upload-file"]');
@@ -852,57 +819,6 @@
     });
   });
 
-  // Check deposit
-  qsa('form[data-form="check-deposit"]').forEach(function (form) {
-    form.addEventListener('submit', async function (e) {
-      e.preventDefault();
-
-      var modal = form.closest('.modal');
-      var submit = qs('button[type="submit"]', form);
-
-      var accountIdField = qs('[name="account_id"]', form);
-      var accountId = accountIdField ? String(accountIdField.value || '').trim() : '';
-      var amountUsd = String(qs('[name="amount_usd"]', form).value || '').trim();
-      var description = String(qs('[name="description"]', form).value || '').trim();
-
-      var front = qs('input[name="front"]', form)?.files?.[0];
-      var back = qs('input[name="back"]', form)?.files?.[0];
-
-      var amount = Number(amountUsd);
-      if (!front || !back) {
-        setModalError(modal, 'Front image and back image are required.');
-        return;
-      }
-      if (!isFinite(amount) || amount <= 0) {
-        setModalError(modal, 'Enter a valid amount greater than 0.');
-        return;
-      }
-
-      var cents = Math.round(amount * 100);
-      if (!isFinite(cents) || cents <= 0) {
-        setModalError(modal, 'Enter a valid amount.');
-        return;
-      }
-
-      if (submit) submit.disabled = true;
-
-      try {
-        var fd = new FormData();
-        // account_id is user-scoped on the server; include it only for backwards compatibility.
-        if (accountId) fd.append('account_id', accountId);
-        fd.append('amount_cents', cents);
-        if (description) fd.append('description', description);
-        fd.append('front', front);
-        fd.append('back', back);
-
-        await postFormData('/api/check-deposits', fd);
-        window.location.reload();
-      } catch (err) {
-        setModalError(modal, err.message || 'Something went wrong.');
-        if (submit) submit.disabled = false;
-      }
-    });
-  });
 
   // Compliance: Save personal details
   var complianceSaveForm = qs('form[data-form="compliance-save"]');
