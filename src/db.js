@@ -90,19 +90,8 @@ function initSqliteSchema(database) {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
-    -- Per-user Increase object mapping (single-account product).
-    CREATE TABLE IF NOT EXISTS user_increase (
-      user_id INTEGER PRIMARY KEY,
-      entity_id TEXT,
-      account_id TEXT,
-      account_number_id TEXT,
-      lockbox_id TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
 
-    -- Compliance documents uploaded by the user (stored in Increase Files).
+    -- Compliance documents uploaded by the user.
     CREATE TABLE IF NOT EXISTS user_compliance_documents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -117,7 +106,7 @@ function initSqliteSchema(database) {
     CREATE INDEX IF NOT EXISTS user_compliance_documents_user_id_created_at_idx
       ON user_compliance_documents(user_id, created_at DESC);
 
-    -- Exports created by the user (stored in Increase Exports).
+    -- Exports created by the user.
     CREATE TABLE IF NOT EXISTS user_exports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -134,8 +123,6 @@ function initSqliteSchema(database) {
       ON user_exports(user_id, created_at DESC);
   `);
 
-  // Lightweight migrations for local SQLite. Keep this idempotent.
-  ensureSqliteColumn(database, 'user_increase', 'entity_id', 'TEXT');
 }
 
 function prepareSqliteStatements(database) {
@@ -186,23 +173,7 @@ function prepareSqliteStatements(database) {
        FROM user_compliance WHERE user_id = ?`
     ),
 
-    // Increase mapping
-    upsertUserIncrease: database.prepare(`
-      INSERT INTO user_increase (
-        user_id, entity_id, account_id, account_number_id, lockbox_id, updated_at
-      ) VALUES (?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(user_id) DO UPDATE SET
-        entity_id = excluded.entity_id,
-        account_id = excluded.account_id,
-        account_number_id = excluded.account_number_id,
-        lockbox_id = excluded.lockbox_id,
-        updated_at = datetime('now')
-    `),
-    getUserIncrease: database.prepare(
-      'SELECT user_id, entity_id, account_id, account_number_id, lockbox_id, created_at, updated_at FROM user_increase WHERE user_id = ?'
-    ),
-
-    // Compliance docs (Increase Files)
+    // Compliance docs
     insertUserComplianceDocument: database.prepare(
       'INSERT INTO user_compliance_documents (user_id, kind, file_id, filename, mime_type) VALUES (?, ?, ?, ?, ?)'
     ),
@@ -210,7 +181,7 @@ function prepareSqliteStatements(database) {
       'SELECT id, user_id, kind, file_id, filename, mime_type, created_at FROM user_compliance_documents WHERE user_id = ? ORDER BY id DESC LIMIT ?'
     ),
 
-    // User exports (Increase Exports)
+    // User exports
     insertUserExport: database.prepare(
       'INSERT INTO user_exports (user_id, export_id, category) VALUES (?, ?, ?)'
     ),
@@ -337,31 +308,6 @@ async function initMysqlSchema(pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS user_increase (
-      user_id BIGINT UNSIGNED NOT NULL,
-      entity_id VARCHAR(128) NULL,
-      account_id VARCHAR(128) NULL,
-      account_number_id VARCHAR(128) NULL,
-      lockbox_id VARCHAR(128) NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (user_id),
-      CONSTRAINT user_increase_user_fk FOREIGN KEY (user_id)
-        REFERENCES users(id)
-        ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `);
-
-  // Lightweight migration for existing MySQL installs.
-  try {
-    const [cols] = await pool.execute("SHOW COLUMNS FROM user_increase LIKE 'entity_id'");
-    if (!cols || cols.length === 0) {
-      await pool.execute('ALTER TABLE user_increase ADD COLUMN entity_id VARCHAR(128) NULL');
-    }
-  } catch {
-    // Ignore migrations failures so boot doesn't hard-fail; schema issues will surface on writes.
-  }
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS user_compliance_documents (
@@ -600,51 +546,6 @@ async function getUserCompliance(userId) {
   return sqliteStmts.getUserCompliance.get(userId) || null;
 }
 
-async function upsertUserIncrease({ userId, entityId, accountId, accountNumberId, lockboxId }) {
-  if (shouldUseMysql()) {
-    const pool = await getMysqlPool();
-    await pool.execute(
-      `INSERT INTO user_increase (user_id, entity_id, account_id, account_number_id, lockbox_id)
-       VALUES (?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         entity_id = VALUES(entity_id),
-         account_id = VALUES(account_id),
-         account_number_id = VALUES(account_number_id),
-         lockbox_id = VALUES(lockbox_id)`,
-      [
-        userId,
-        entityId || null,
-        accountId || null,
-        accountNumberId || null,
-        lockboxId || null,
-      ]
-    );
-    return;
-  }
-
-  getSqliteDb();
-  sqliteStmts.upsertUserIncrease.run(
-    userId,
-    entityId || null,
-    accountId || null,
-    accountNumberId || null,
-    lockboxId || null
-  );
-}
-
-async function getUserIncrease(userId) {
-  if (shouldUseMysql()) {
-    const pool = await getMysqlPool();
-    const [rows] = await pool.execute(
-      'SELECT user_id, entity_id, account_id, account_number_id, lockbox_id, created_at, updated_at FROM user_increase WHERE user_id = ? LIMIT 1',
-      [userId]
-    );
-    return rows && rows[0] ? rows[0] : null;
-  }
-
-  getSqliteDb();
-  return sqliteStmts.getUserIncrease.get(userId) || null;
-}
 
 async function addUserComplianceDocument({ userId, kind, fileId, filename, mimeType }) {
   if (!fileId) throw new Error('fileId is required');
@@ -748,10 +649,6 @@ module.exports = {
   getUserCompliance,
   addUserComplianceDocument,
   listUserComplianceDocuments,
-
-  // Increase mapping
-  upsertUserIncrease,
-  getUserIncrease,
   addUserExport,
   listUserExports,
 };
